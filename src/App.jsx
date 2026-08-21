@@ -45,7 +45,7 @@ function migrate(input) {
   /* Campi comparsi lungo la strada: se mancano, si riempiono
      col vuoto invece di far esplodere i componenti. */
   ["expenses", "jobs", "goals", "ideas", "tasks", "portfolio",
-   "watch", "clinic", "topikLogs", "wishlist"].forEach((k) => {
+   "watch", "clinic", "topikLogs", "wishlist", "scheduledJobs"].forEach((k) => {
     if (!Array.isArray(d[k])) d[k] = [];
   });
   ["log", "plan", "topikRoadmap"].forEach((k) => {
@@ -357,7 +357,7 @@ const DEFAULT_STATE = {
   habits: DEFAULT_HABITS, categories: DEFAULT_CATEGORIES,
   log: {}, expenses: [], jobs: [], goals: [], ideas: [], plan: {},
   tasks: [], portfolio: [], watch: [], clinic: [],
-  topikRoadmap: {}, topikLogs: [], wishlist: [],
+  topikRoadmap: {}, topikLogs: [], wishlist: [], scheduledJobs: [],
   weekFocus: { week: "", tasks: [] },
 };
 
@@ -1669,7 +1669,7 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
       </Rise>
 
       <Rise d={next()}>
-        <Agenda state={state} tasks={tasks} addTask={addTask} toggleTask={toggleTask}
+        <Agenda state={state} persist={persist} tasks={tasks} addTask={addTask} toggleTask={toggleTask}
           editTask={editTask} rmTask={rmTask} exposure={exposure} />
       </Rise>
 
@@ -1841,6 +1841,7 @@ function PinnedMedal({ medal, streak, best }) {
 
 /* ── Galleria trofei ───────────────────────────────────────── */
 function Trofei({ state, persist, consistency, medals }) {
+  const [zoom, setZoom] = useState(null);
   const pin = (id) => persist(Object.assign({}, state, {
     pinnedMedal: state.pinnedMedal === id ? null : id,
   }));
@@ -1869,7 +1870,7 @@ function Trofei({ state, persist, consistency, medals }) {
           const pinned = state.pinnedMedal === m.id;
           return (
             <Rise key={m.id} d={i * 60}>
-              <button className={"btn medalcard" + (m.unlocked ? " on" : "")} onClick={() => m.unlocked && pin(m.id)} style={{
+              <button className={"btn medalcard" + (m.unlocked ? " on" : "")} onClick={() => setZoom(m)} style={{
                 width: "100%", background: C.card, border: "1px solid " + (pinned ? "#C9A24B" : C.line),
                 borderRadius: 22, padding: "20px 14px 16px", cursor: m.unlocked ? "pointer" : "default",
                 fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", gap: 10,
@@ -1923,22 +1924,99 @@ function Trofei({ state, persist, consistency, medals }) {
           );
         })}
       </div>
+
+      {zoom && (
+        <MedalZoom medal={zoom} pinned={state.pinnedMedal === zoom.id}
+          onPin={() => { pin(zoom.id); }} onClose={() => setZoom(null)} />
+      )}
     </div>
   );
 }
 
-function Agenda({ tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
+function MedalZoom({ medal: m, pinned, onPin, onClose }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const esc = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", esc); };
+  }, []);
+  return (
+    <div className="wrapscrim" onClick={onClose}>
+      <div className="wrapcard" onClick={(e) => e.stopPropagation()}>
+        <button className="btn iconbtn wrap-close" onClick={onClose} aria-label="Chiudi"><X size={17} /></button>
+        <div style={{ width: 190, height: 190, margin: "6px auto 4px", display: "grid", placeItems: "center", position: "relative" }}>
+          {m.unlocked && m.img && <div className="medalglow" />}
+          {m.img ? (
+            <img src={m.img} alt="" className={m.unlocked ? "floaty" : undefined} style={{
+              width: "100%", height: "100%", objectFit: "contain",
+              filter: m.unlocked ? "drop-shadow(0 8px 24px rgba(201,162,75,.4))" : "grayscale(1) brightness(.4) contrast(.8)",
+              opacity: m.unlocked ? 1 : 0.5,
+            }} />
+          ) : (
+            <div style={{ width: 140, height: 140, borderRadius: 999,
+              background: m.unlocked ? "#C9A24B22" : C.card2,
+              display: "grid", placeItems: "center", color: m.unlocked ? "#C9A24B" : C.dim }}>
+              <Rocket size={48} />
+            </div>
+          )}
+          {!m.unlocked && (
+            <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
+              <div style={{ width: 46, height: 46, borderRadius: 999, background: C.bg + "D0",
+                display: "grid", placeItems: "center", border: "1px solid " + C.line }}>
+                <Lock size={19} color={C.mut} />
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="wrap-medalname">{m.name}</div>
+        <div className="wrap-medalsub">{m.days} giorni · {m.sub}</div>
+        <p style={{ fontSize: 14, color: m.unlocked ? C.mut : C.dim, lineHeight: 1.6, margin: "10px 0 22px" }}>
+          {m.unlocked
+            ? "Sbloccata per sempre, anche se salti un giorno dopo di questo."
+            : "Si sblocca arrivando a " + m.days + " giorni di fila."}
+        </p>
+        {m.unlocked && (
+          <Btn kind={pinned ? "solid" : "ghost"} full onClick={onPin} style={{ padding: 15 }}>
+            {pinned ? "Fissata in Focus · tocca per togliere" : "Fissa in Focus"}
+          </Btn>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Agenda({ state, persist, tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
   const [sel, setSel] = useState(todayKey());
   const [txt, setTxt] = useState("");
   const [pil, setPil] = useState("occhio");
+  const [jobForm, setJobForm] = useState(null);
   const days = Array.from({ length: 21 }, (_, i) => addDays(i));
   const forDay = tasks.filter((t) => t.date === sel);
   const dark = exposure.filter((e) => e.possible > 0).sort((a, b) => a.ratio - b.ratio)[0];
+  const isPast = sel < todayKey();
+  const entry = (state.log && state.log[sel]) || {};
+  const jobsForDay = (state.scheduledJobs || []).filter((j) => j.date === sel);
 
   const submit = () => {
     if (!txt.trim()) return;
     addTask(sel, txt.trim(), pil);
     setTxt("");
+  };
+
+  const addJob = () => {
+    if (!jobForm || !jobForm.name || !jobForm.name.trim()) return;
+    const job = {
+      id: "sj" + Date.now() + Math.random().toString(36).slice(2, 7),
+      date: sel, name: jobForm.name.trim(),
+      safeAmount: Number(jobForm.safe) || 0,
+      estAmount: Number(jobForm.est) || 0,
+    };
+    persist(Object.assign({}, state, { scheduledJobs: (state.scheduledJobs || []).concat([job]) }));
+    setJobForm(null);
+  };
+  const rmJob = (id) => {
+    persist(Object.assign({}, state, { scheduledJobs: (state.scheduledJobs || []).filter((j) => j.id !== id) }));
   };
 
   const quick = [
@@ -1994,6 +2072,29 @@ function Agenda({ tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
         </div>
       </div>
 
+      {isPast && (
+        <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 10 }}>Abitudini chiuse quel giorno</div>
+          {(state.habits || []).filter((h) => habitState(h, entry).status !== "none").length === 0 && (
+            <Empty>Nessuna abitudine registrata per questo giorno.</Empty>
+          )}
+          {(state.habits || []).map((h) => {
+            const st = habitState(h, entry);
+            if (st.status === "none") return null;
+            const pillar = P[h.pillar];
+            return (
+              <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
+                <Dot color={st.color} size={8} />
+                <span style={{ fontSize: 14, color: C.txt }}>{h.label}</span>
+                <span style={{ fontSize: 12, color: C.dim, marginLeft: "auto" }}>
+                  {st.status === "full" ? "fatta" : st.done + "/" + st.tot}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {forDay.length === 0 && <Empty>Niente per questo giorno.</Empty>}
       {forDay.map((t) => (
         <div key={t.id} className="row" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 8px" }}>
@@ -2039,6 +2140,50 @@ function Agenda({ tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
           border: "1px dashed " + C.line2, background: "transparent", color: C.mut, cursor: "pointer",
         }}>+ Riaccendere {dark.name.toLowerCase()}</button>
       )}
+
+      <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid " + C.line }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: FC.high }}>Lavori · Set</span>
+          {!jobForm && (
+            <button className="btn" onClick={() => setJobForm({ name: "", safe: "", est: "" })} style={{
+              fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
+              border: "1px dashed " + C.line2, background: "transparent", color: C.mut,
+            }}>+ Aggiungi lavoro</button>
+          )}
+        </div>
+
+        {jobsForDay.length === 0 && !jobForm && <Empty>Nessun lavoro fissato per questo giorno.</Empty>}
+        {jobsForDay.map((j) => (
+          <div key={j.id} className="row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 8px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14.5, color: C.txt, fontWeight: 500 }}>{j.name}</div>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
+                Sicuro {eur(j.safeAmount)}{j.estAmount ? " · stimato +" + eur(j.estAmount) : ""}
+              </div>
+            </div>
+            <button className="btn" onClick={() => rmJob(j.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4, flexShrink: 0 }}>
+              <X size={13} />
+            </button>
+          </div>
+        ))}
+
+        {jobForm && (
+          <div style={{ display: "grid", gap: 10, marginTop: 8, background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: 14 }}>
+            <input value={jobForm.name} onChange={(e) => setJobForm(Object.assign({}, jobForm, { name: e.target.value }))}
+              placeholder="Nome lavoro / set" style={inputBase} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <input value={jobForm.safe} onChange={(e) => setJobForm(Object.assign({}, jobForm, { safe: e.target.value }))}
+                placeholder="Importo sicuro €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
+              <input value={jobForm.est} onChange={(e) => setJobForm(Object.assign({}, jobForm, { est: e.target.value }))}
+                placeholder="Importo stimato €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn kind="quiet" style={{ flex: 1 }} onClick={() => setJobForm(null)}>Annulla</Btn>
+              <Btn kind="solid" style={{ flex: 1 }} onClick={addJob}>Salva</Btn>
+            </div>
+          </div>
+        )}
+      </div>
     </Card>
   );
 }
@@ -3287,7 +3432,7 @@ function Soldi({ state, persist, money, career, inc }) {
         {view === "entrate" && <Entrate state={state} persist={persist} career={career} inc={inc} />}
         {view === "uscite" && <Uscite state={state} persist={persist} money={money} />}
         {view === "arsenale" && <Arsenale state={state} persist={persist} money={money} />}
-        {view === "proiezione" && <Proiezione money={money} career={career} inc={inc} />}
+        {view === "proiezione" && <Proiezione money={money} career={career} inc={inc} scheduledJobs={state.scheduledJobs} />}
       </div>
     </div>
   );
@@ -3757,7 +3902,40 @@ function Arsenale({ state, persist, money }) {
   );
 }
 
-function Proiezione({ money, career, inc }) {
+function MonthOutlook({ scheduledJobs }) {
+  const now = new Date();
+  const ym = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+  const thisMonth = (scheduledJobs || []).filter((j) => (j.date || "").startsWith(ym));
+  const safe = thisMonth.reduce((s, j) => s + (Number(j.safeAmount) || 0), 0);
+  const est = thisMonth.reduce((s, j) => s + (Number(j.estAmount) || 0), 0);
+  const pot = safe + est;
+  return (
+    <Card glow={FC.high}>
+      <Label>Prospettiva di questo mese</Label>
+      {thisMonth.length === 0 ? (
+        <Empty>Nessun lavoro fissato nell'Agenda per questo mese. Aggiungine uno da un giorno del calendario.</Empty>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Guadagno sicuro</div>
+              <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.03em", color: FC.correct }}>{eur(safe)}</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Potenziale (stima)</div>
+              <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.03em", color: FC.high }}>{eur(pot)}</div>
+            </div>
+          </div>
+          <p style={{ fontSize: 12.5, color: C.dim, margin: "10px 0 0", lineHeight: 1.5 }}>
+            {thisMonth.length} lavor{thisMonth.length === 1 ? "o fissato" : "i fissati"} questo mese, dall'Agenda.
+          </p>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function Proiezione({ money, career, inc, scheduledJobs }) {
   const v = (() => {
     if (inc.conf < 0.2 && inc.seed <= 0) return { c: C.mut, t: "Registra qualche lavoro nella scheda Entrate: da lì in poi calcolo tutto io." };
     if (money.surplus <= 0) return { c: FC.clip, t: "Stai spendendo più di quello che entra. A questo ritmo la Corea si allontana ogni mese." };
@@ -3768,6 +3946,9 @@ function Proiezione({ money, career, inc }) {
   return (
     <>
       <Rise>
+        <MonthOutlook scheduledJobs={scheduledJobs} />
+      </Rise>
+      <Rise d={70}>
         <Card glow={v.c}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12 }}>
             <Dot color={v.c} /><span style={{ fontSize: 13, color: C.mut, fontWeight: 500 }}>Verdetto</span>
@@ -3777,14 +3958,14 @@ function Proiezione({ money, career, inc }) {
             Basato su un reddito ancora stimato. Più lavori registri, più la proiezione diventa vera.</p>}
         </Card>
       </Rise>
-      <Rise d={70}>
+      <Rise d={140}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(148px,1fr))", gap: 12 }}>
           <Stat label="Mesi al budget" value={isFinite(money.monthsToTarget) ? Math.ceil(money.monthsToTarget) : "∞"} />
           {money.requiredMonthly != null && isFinite(money.requiredMonthly) && <Stat label="Minimo / mese" value={eur(money.requiredMonthly)} color={FC.high} />}
           <Stat label="Crediti in sospeso" value={eur(career.pendingTot)} color={career.pendingTot > 0 ? FC.high : C.txt} />
         </div>
       </Rise>
-      <Rise d={140}>
+      <Rise d={210}>
         <Card>
           <Label>Se continui così</Label>
           <div style={{ display: "grid", gap: 14 }}>
