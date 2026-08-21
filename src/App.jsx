@@ -1429,6 +1429,7 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
             <div>
               <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
                 {allDone ? "Giornata chiusa." : score === 0 ? "Si comincia." : held ? "Giornata salva." : "In movimento."}
+                <span style={{ display: "inline-block", marginLeft: 8, fontSize: 15, transform: "rotate(-18deg)" }}>🍌</span>
               </div>
               <div style={{ fontSize: 14, color: C.mut, marginTop: 3 }}>
                 {allDone ? "Tutto verde. Il resto di oggi è tuo."
