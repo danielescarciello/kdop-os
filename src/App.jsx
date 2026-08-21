@@ -189,11 +189,11 @@ const P = Object.fromEntries(PILLARS.map((p) => [p.id, p]));
 
 /* ── sfondi cinematografici per pilastro (TaskCard) ────────── */
 const PILLAR_IMG = {
-  lingua: "https://i.postimg.cc/Mnhvv1xn/26C7DAA9-0C0F-45E4-A842-5B6C08A9E17F.png",
-  occhio: "https://i.postimg.cc/VJ3ddX1n/723CC3EA-FF75-4D93-B4F5-5871A3402DA8.png",
-  set:    "https://i.postimg.cc/Mnhvv1xy/9D684721-54A5-4C33-ADC5-4E98173E340B.png",
-  cassa:  "https://i.postimg.cc/cvVrrfZ7/CF1BB5DC-1DE8-40BA-BC1F-5A9CFCE172EB.png",
-  nome:   "https://i.postimg.cc/RWjNNw97/FC5138B2-9F0F-4B54-B8FA-C0F09EB6DF4D.png",
+  lingua: "/images/lingua.png",
+  occhio: "/images/occhio.png",
+  set:    "/images/set.png",
+  cassa:  "/images/cassa.png",
+  nome:   "/images/corpo.png",
 };
 
 /* ── Ruoli di lavoro ───────────────────────────────────────── */
@@ -1362,7 +1362,7 @@ const Styles = () => (
     /* ── TaskCard cinematografica ── */
     .taskcard {
       position: relative; border-radius: 20px; min-height: 108px;
-      background-size: cover; background-position: center; background-repeat: no-repeat;
+      background-size: cover; background-position: right center; background-repeat: no-repeat;
       display: flex; align-items: center; justify-content: space-between;
       padding: 18px 16px; overflow: hidden; cursor: pointer; width: 100%; border: none;
       font-family: inherit; text-align: left;
