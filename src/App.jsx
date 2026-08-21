@@ -55,6 +55,7 @@ function migrate(input) {
   if (!d.weekFocus || typeof d.weekFocus !== "object") d.weekFocus = { week: "", tasks: [] };
   if (!Array.isArray(d.medalSeen)) d.medalSeen = [];
   if (d.pinnedMedal === undefined) d.pinnedMedal = null;
+  ["name", "avatar", "bio"].forEach((k) => { if (typeof d.profile[k] !== "string") d.profile[k] = ""; });
 
   d.v = SCHEMA;
   return d;
@@ -353,7 +354,8 @@ const PHASES = [
 ];
 
 const DEFAULT_STATE = {
-  profile: { onboarded: false, savings: 0, incomeEstimate: 0, koreaBudget: 20000, koreaMonths: 12,
+  profile: { onboarded: false, name: "", avatar: "", bio: "",
+    savings: 0, incomeEstimate: 0, koreaBudget: 20000, koreaMonths: 12,
     targetDate: "", topikDate: "2027-04-10", topikStart: "" },
   habits: DEFAULT_HABITS, categories: DEFAULT_CATEGORIES,
   log: {}, expenses: [], jobs: [], goals: [], ideas: [], plan: {},
@@ -870,6 +872,36 @@ const Radio = ({ done, color, size = 24 }) => (
     color: "#141416", transition: "background .2s, border-color .2s",
   }}>{done && <Check size={Math.round(size * 0.58)} strokeWidth={3} />}</span>
 );
+/* Le iniziali quando non c'è ancora una foto */
+const initials = (name) => {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  return (parts[0][0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
+};
+
+/* La foto viene ridotta a 320px e riscritta in JPEG prima di entrare
+   nello stato: così il backup e la riga sul cloud restano leggeri. */
+function shrinkImage(file, size = 320) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("read"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("decode"));
+      img.onload = () => {
+        const side = Math.min(img.width, img.height);
+        const cv = document.createElement("canvas");
+        cv.width = size; cv.height = size;
+        const ctx = cv.getContext("2d");
+        ctx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        resolve(cv.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 const Stat = ({ label, value, color, sub }) => (
   <Card pad={18}>
     <div style={{ fontSize: 13, color: C.mut, marginBottom: 7 }}>{label}</div>
@@ -919,6 +951,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [sec, setSec] = useState("focus");
   const [settings, setSettings] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [quick, setQuick] = useState(false);
   const timer = useRef(null);
   const scroller = useRef(null);
@@ -1008,7 +1041,7 @@ export default function App() {
     <div style={shell} ref={scroller}>
       <Styles />
       <TopBar state={state} kafa={kafa} money={money}
-        onSettings={() => setSettings(true)} sec={sec} sync={sync} />
+        onProfile={() => setProfileOpen(true)} sec={sec} sync={sync} />
 
       {recovered && (
         <div className="rise" style={{ marginBottom: 14, padding: "13px 16px", borderRadius: 18,
@@ -1044,6 +1077,13 @@ export default function App() {
       )}
 
       {quick && <QuickIdea state={state} persist={persist} onClose={() => setQuick(false)} />}
+
+      {profileOpen && <Sheet title="Profilo" onClose={() => setProfileOpen(false)}>
+        <Profilo state={state} persist={persist} user={user} consistency={consistency}
+          medals={medals} kafa={kafa} money={money}
+          onSettings={() => { setProfileOpen(false); setSettings(true); }} />
+      </Sheet>}
+
       {settings && <Sheet title="Impostazioni" onClose={() => setSettings(false)}>
         <Account user={user} sync={sync} onAuth={onAuth} onLogout={onLogout} />
         <Config state={state} persist={persist} inc={inc} />
@@ -1069,7 +1109,7 @@ export default function App() {
 }
 
 /* ── Barra superiore: una riga sola, sempre uguale ─────────── */
-function TopBar({ state, kafa, money, onSettings, sec, sync }) {
+function TopBar({ state, kafa, money, onProfile, sec, sync }) {
   const dd = state.profile.targetDate ? daysBetween(todayKey(), state.profile.targetDate) : null;
   const topikLeft = state.profile.topikDate ? daysBetween(todayKey(), state.profile.topikDate) : null;
   const titles = { focus: "Focus", accademia: "Accademia", logistica: "Logistica", oracolo: "Oracolo" };
@@ -1096,8 +1136,10 @@ function TopBar({ state, kafa, money, onSettings, sec, sync }) {
               style={{ width: 8, height: 8, borderRadius: 999, flexShrink: 0,
                 background: sync === "synced" ? FC.correct : sync === "offline" ? FC.clip : FC.high }} />
           )}
-          <button className="btn iconbtn" onClick={onSettings} aria-label="Impostazioni">
-            <Settings size={18} />
+          <button className="btn avatarbtn" onClick={onProfile} aria-label="Profilo">
+            {state.profile.avatar
+              ? <img src={state.profile.avatar} alt="" />
+              : initials(state.profile.name) || <Settings size={17} />}
           </button>
         </div>
       </div>
@@ -1250,9 +1292,19 @@ const Styles = () => (
     :root { color-scheme: dark; }
     * { -webkit-font-smoothing: antialiased; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body, #root { background: ${C.bg}; margin: 0; padding: 0; }
+    html, body { max-width: 100%; overflow-x: hidden; }
     body {
       overscroll-behavior-y: none;
       text-size-adjust: 100%; -webkit-text-size-adjust: 100%;
+      /* un solo font per tutta l'app, portali compresi */
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      letter-spacing: -0.011em; color: ${C.txt};
+    }
+    /* i portali (calendario, medaglia, fogli) vivono fuori dallo shell:
+       senza questo ereditano il font di sistema e stonano */
+    .calfullscrim, .wrapscrim, .scrim, .fab {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      letter-spacing: -0.011em;
     }
 
     @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
@@ -1331,9 +1383,15 @@ const Styles = () => (
     .grabber { display: block; width: 38px; height: 4px; border-radius: 999px;
       background: ${C.line2}; margin: 0 auto 14px; }
     .sheet-body {
-      overflow-y: auto; -webkit-overflow-scrolling: touch;
+      overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
       padding: 18px 16px calc(env(safe-area-inset-bottom) + 26px);
+      width: 100%; max-width: 100%; box-sizing: border-box;
+      overscroll-behavior: contain;
     }
+    /* niente più sfarfallio orizzontale dentro i fogli:
+       ogni figlio resta dentro la sua colonna */
+    .sheet-body > * { max-width: 100%; min-width: 0; }
+    .sheet-body input, .sheet-body textarea, .sheet-body select { max-width: 100%; }
 
     .pills { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 20px; padding-bottom: 2px; }
 
@@ -1467,23 +1525,83 @@ const Styles = () => (
 
     /* ── Calendario a schermo intero ── */
     .calfullscrim {
-      position: fixed; inset: 0; z-index: 80; background: ${C.bg};
-      display: flex; flex-direction: column; overflow-y: auto;
+      position: fixed; inset: 0; z-index: 80; background: ${C.bg}; color: ${C.txt};
+      display: block; overflow-y: auto; overflow-x: hidden;
       animation: fadeIn .2s ease both;
     }
     .calfullhead {
-      position: sticky; top: 0; z-index: 2; background: ${C.bg};
-      display: flex; align-items: center; justify-content: space-between; gap: 10px;
-      padding: calc(env(safe-area-inset-top) + 14px) 16px 12px; border-bottom: 1px solid ${C.line};
+      position: sticky; top: 0; z-index: 3;
+      background: ${C.bg}E8; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      border-bottom: 1px solid ${C.line}; padding-top: env(safe-area-inset-top);
     }
-    .calfullmonth { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; }
-    .calfullbody { padding: 16px; width: 100%; box-sizing: border-box; }
+    .calfullhead-inner {
+      max-width: 640px; margin: 0 auto; height: 60px; padding: 0 16px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .calfullmonth {
+      font-size: 20px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.1;
+      text-transform: capitalize;
+    }
+    .calfullmonth small {
+      display: block; font-size: 12.5px; font-weight: 500; color: ${C.dim};
+      letter-spacing: -0.01em; margin-top: 2px; text-transform: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .calfullwrap { max-width: 640px; margin: 0 auto; padding: 0 16px calc(env(safe-area-inset-bottom) + 40px); }
+    .calfullbody { padding: 18px 0 4px; width: 100%; box-sizing: border-box; }
     .calfulldow, .calfullgrid {
-      display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; width: 100%; box-sizing: border-box;
+      display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 2px; width: 100%; box-sizing: border-box;
     }
-    .calfulldow { margin-bottom: 6px; text-align: center; }
-    .calfulldow span { font-size: 10.5px; color: ${C.dim}; text-transform: uppercase; letter-spacing: .04em; }
-    .calfulldetail { padding: 4px 16px 32px; border-top: 1px solid ${C.line}; margin-top: 6px; }
+    .calfulldow { margin-bottom: 8px; text-align: center; }
+    .calfulldow span {
+      font-size: 11px; font-weight: 600; color: ${C.dim};
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    /* una cella = un giorno. Numero al centro, puntini sotto, niente bordi
+       che spezzano la griglia: solo il giorno scelto si colora. */
+    .calday {
+      position: relative; aspect-ratio: 1; min-width: 0; width: 100%;
+      border: none; background: transparent; padding: 0; cursor: pointer;
+      font-family: inherit; color: ${C.mut};
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+      border-radius: 999px; transition: background .18s, color .18s;
+    }
+    .calday .n {
+      font-size: 15.5px; font-weight: 500; line-height: 1; letter-spacing: -0.02em;
+      width: 34px; height: 34px; border-radius: 999px;
+      display: grid; place-items: center; transition: background .18s, color .18s;
+    }
+    .calday.out { opacity: .28; }
+    .calday.today .n { color: ${FC.high}; font-weight: 700; }
+    .calday.sel .n { background: ${C.txt}; color: #141416; font-weight: 700; }
+    .calday.sel.today .n { background: ${FC.high}; color: #141416; }
+    .caldots { height: 5px; display: flex; gap: 3px; align-items: center; justify-content: center; }
+    .calfulldetail {
+      border-top: 1px solid ${C.line}; margin-top: 14px; padding-top: 20px;
+    }
+    .calsectitle {
+      font-size: 12.5px; font-weight: 600; letter-spacing: .02em; margin-bottom: 10px;
+    }
+
+    /* ── avatar profilo ── */
+    .avatarbtn {
+      width: 38px; height: 38px; border-radius: 999px; flex-shrink: 0; padding: 0;
+      border: 1px solid ${C.line2}; background: ${C.card2}; color: ${C.mut};
+      display: grid; place-items: center; cursor: pointer; overflow: hidden;
+      font-family: inherit; font-weight: 700; font-size: 14px; letter-spacing: -0.02em;
+    }
+    .avatarbtn img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .avatarbig {
+      width: 92px; height: 92px; border-radius: 999px; flex-shrink: 0; padding: 0;
+      border: 1px solid ${C.line2}; background: ${C.card2}; color: ${C.dim};
+      display: grid; place-items: center; cursor: pointer; position: relative;
+      font-family: inherit; font-weight: 700; font-size: 30px; letter-spacing: -0.03em;
+    }
+    .avatarbig img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 999px; }
+    .avatarbig .cam {
+      position: absolute; right: -2px; bottom: -2px; width: 30px; height: 30px; border-radius: 999px;
+      background: ${C.txt}; color: #141416; display: grid; place-items: center; border: 3px solid ${C.card};
+    }
     .btn { transition: transform .12s ease, opacity .15s; }
     .btn:active { transform: scale(.95); }
     .row { transition: background .15s; border-radius: 12px; }
@@ -1596,7 +1714,8 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
 
       {pinned && (
         <Rise d={next()}>
-          <PinnedMedal medal={pinned} streak={consistency.streak} best={consistency.best} />
+          <PinnedMedal medal={pinned} streak={consistency.streak} best={consistency.best}
+            onUnpin={() => persist(Object.assign({}, state, { pinnedMedal: null }))} />
         </Rise>
       )}
 
@@ -1850,34 +1969,43 @@ function DailyWrap({ onClose, streak, fulls, coreTot, doneTasks, todayTasksLen, 
 }
 
 /* ── Medaglia fissata in Focus ─────────────────────────────── */
-function PinnedMedal({ medal, streak, best }) {
+function PinnedMedal({ medal, streak, best, onUnpin }) {
   const prossima = MEDALS.find((m) => m.days > best);
+  const [zoom, setZoom] = useState(false);
   return (
-    <Card glow="#C9A24B" pad={20}>
-      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-        <div className="medal-shine" style={{ width: 96, height: 96, flexShrink: 0,
-          display: "grid", placeItems: "center" }}>
-          <img src={medal.img} alt={medal.name}
-            style={{ width: "100%", height: "100%", objectFit: "contain",
-              filter: "drop-shadow(0 4px 14px rgba(201,162,75,.35))" }} />
+    <>
+      <Card glow="#C9A24B" pad={20} onClick={() => setZoom(true)}>
+        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+          <div className="medal-shine" style={{ width: 96, height: 96, flexShrink: 0,
+            display: "grid", placeItems: "center" }}>
+            <img src={medal.img} alt={medal.name}
+              style={{ width: "100%", height: "100%", objectFit: "contain",
+                filter: "drop-shadow(0 4px 14px rgba(201,162,75,.35))" }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, color: "#C9A24B", fontWeight: 600, marginBottom: 3 }}>
+              {medal.name}
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span key={streak} className="pop" style={{ fontSize: 40, fontWeight: 700,
+                letterSpacing: "-0.045em", lineHeight: 1 }}>{streak}</span>
+              <span style={{ fontSize: 15, color: C.mut }}>
+                giorn{streak === 1 ? "o" : "i"} di fila
+              </span>
+            </div>
+            <div style={{ fontSize: 13, color: C.dim, marginTop: 6 }}>
+              Record personale: {best}{prossima ? " · prossima medaglia a " + prossima.days : " · le hai tutte"}
+            </div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 6, opacity: .8 }}>tocca per ingrandirla</div>
+          </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, color: "#C9A24B", fontWeight: 600, marginBottom: 3 }}>
-            {medal.name}
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span key={streak} className="pop" style={{ fontSize: 40, fontWeight: 700,
-              letterSpacing: "-0.045em", lineHeight: 1 }}>{streak}</span>
-            <span style={{ fontSize: 15, color: C.mut }}>
-              giorn{streak === 1 ? "o" : "i"} di fila
-            </span>
-          </div>
-          <div style={{ fontSize: 13, color: C.dim, marginTop: 6 }}>
-            Record personale: {best}{prossima ? " · prossima medaglia a " + prossima.days : " · le hai tutte"}
-          </div>
-        </div>
-      </div>
-    </Card>
+      </Card>
+      {zoom && createPortal(
+        <MedalZoom medal={medal} pinned onPin={() => { onUnpin && onUnpin(); setZoom(false); }}
+          onClose={() => setZoom(false)} />,
+        document.body
+      )}
+    </>
   );
 }
 
@@ -2032,7 +2160,12 @@ function MedalZoom({ medal: m, pinned, onPin, onClose }) {
 function Agenda({ state, persist, tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
   const [full, setFull] = useState(false);
   const [openDay, setOpenDay] = useState(todayKey());
-  const days = Array.from({ length: 21 }, (_, i) => addDays(i));
+  /* 3 settimane allineate alla griglia: si parte dalla domenica
+     di questa settimana, così le colonne corrispondono ai giorni */
+  const days = useMemo(() => {
+    const start = -new Date(todayKey()).getDay();
+    return Array.from({ length: 21 }, (_, i) => addDays(start + i));
+  }, []);
 
   const openOn = (k) => { setOpenDay(k); setFull(true); };
 
@@ -2049,24 +2182,24 @@ function Agenda({ state, persist, tasks, addTask, toggleTask, editTask, rmTask, 
         <p style={{ fontSize: 14.5, color: C.mut, margin: "0 0 16px", lineHeight: 1.6 }}>
           Cose da fare, lavori e set fissati. Tocca un giorno per il calendario completo.
         </p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0,1fr))", gap: 6, width: "100%", boxSizing: "border-box" }}>
+        {/* stesse celle del calendario grande: un solo linguaggio */}
+        <div className="calfulldow">
+          {DOW.map((d) => <span key={d}>{d}</span>)}
+        </div>
+        <div className="calfullgrid">
           {days.map((k) => {
             const n = tasks.filter((t) => t.date === k);
-            const hasJob = (state.scheduledJobs || []).some((j) => j.date === k);
+            const dayJobs = (state.scheduledJobs || []).filter((j) => j.date === k);
+            const hasIncassato = dayJobs.some((j) => j.status === "incassato");
             const isToday = k === todayKey();
             const dd = new Date(k);
             return (
-              <button key={k} className="btn" onClick={(e) => { e.stopPropagation(); openOn(k); }} style={{
-                aspectRatio: "1", minWidth: 0, borderRadius: 14, cursor: "pointer", fontFamily: "inherit",
-                border: "1px solid " + (isToday ? C.line2 : C.line), background: "transparent",
-                color: C.mut, display: "flex", flexDirection: "column", alignItems: "center",
-                justifyContent: "center", gap: 3, padding: 2, boxSizing: "border-box", overflow: "hidden",
-              }}>
-                <span style={{ fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: ".04em" }}>{DOW[dd.getDay()]}</span>
-                <span style={{ fontSize: 14, fontWeight: isToday ? 700 : 500, lineHeight: 1 }}>{dd.getDate()}</span>
-                <span style={{ height: 5, display: "flex", gap: 2, alignItems: "center" }}>
+              <button key={k} className={"calday" + (isToday ? " today sel" : "")}
+                onClick={(e) => { e.stopPropagation(); openOn(k); }}>
+                <span className="n">{dd.getDate()}</span>
+                <span className="caldots">
+                  {dayJobs.length > 0 && <Dot color={hasIncassato ? FC.correct : FC.high} size={5} />}
                   {n.slice(0, 2).map((t, i) => <Dot key={i} color={t.done ? C.dim : (P[t.pillar] ? P[t.pillar].hue : FC.low)} size={4} />)}
-                  {hasJob && <Dot color={FC.high} size={4} />}
                 </span>
               </button>
             );
@@ -2133,53 +2266,81 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
       j.id === id ? Object.assign({}, j, { status: j.status === "incassato" ? "previsto" : "incassato" }) : j),
   }));
 
+  const monthJobs = (state.scheduledJobs || []).filter((j) => (j.date || "").slice(0, 7) === ym);
+  const monthPrevisto = monthJobs.filter((j) => j.status !== "incassato")
+    .reduce((s, j) => s + Number(j.safeAmount || 0) + Number(j.estAmount || 0), 0);
+  const monthIncassato = monthJobs.filter((j) => j.status === "incassato")
+    .reduce((s, j) => s + Number(j.safeAmount || 0) + Number(j.estAmount || 0), 0);
+
   return createPortal(
     <div className="calfullscrim">
       <div className="calfullhead">
-        <button className="btn iconbtn" onClick={onClose} aria-label="Chiudi"><X size={18} /></button>
-        <div className="calfullmonth">
-          <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, -1))} aria-label="Mese precedente"><ChevronLeft size={17} /></button>
-          <span>{monthLabel(ym)}</span>
-          <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, 1))} aria-label="Mese successivo"><ChevronRight size={17} /></button>
-        </div>
-        <button className="btn" onClick={() => pickDay(todayKey())} style={{
-          fontSize: 12.5, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999,
-          border: "1px solid " + C.line, background: "transparent", color: C.mut, cursor: "pointer",
-        }}>Oggi</button>
-      </div>
-
-      <div className="calfullbody">
-        <div className="calfulldow">
-          {DOW.map((d) => <span key={d}>{d}</span>)}
-        </div>
-        <div className="calfullgrid">
-          {cells.map((c) => {
-            const dayJobs = jobsByDay[c.key] || [];
-            const hasIncassato = dayJobs.some((j) => j.status === "incassato");
-            const isSel = c.key === sel, isToday = c.key === todayKey();
-            return (
-              <button key={c.key} className="btn" onClick={() => pickDay(c.key)} style={{
-                aspectRatio: "1", minWidth: 0, borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
-                border: "1px solid " + (isSel ? FC.low + "77" : isToday ? C.line2 : "transparent"),
-                background: isSel ? FC.low + "1F" : "transparent",
-                color: !c.inMonth ? C.dim : isSel ? C.txt : C.mut,
-                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                gap: 3, padding: 2, boxSizing: "border-box", overflow: "hidden", opacity: c.inMonth ? 1 : 0.45,
-              }}>
-                <span style={{ fontSize: 14, fontWeight: isToday ? 700 : 500 }}>{c.day}</span>
-                {dayJobs.length > 0 && <Dot color={hasIncassato ? FC.correct : FC.high} size={5} />}
-              </button>
-            );
-          })}
+        <div className="calfullhead-inner">
+          <div className="calfullmonth" style={{ minWidth: 0 }}>
+            {monthLabel(ym)}
+            <small>{monthJobs.length ? monthJobs.length + (monthJobs.length === 1 ? " lavoro" : " lavori") + " · " + eur(monthIncassato) + " incassati" : "Nessun lavoro questo mese"}</small>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, -1))} aria-label="Mese precedente"><ChevronLeft size={17} /></button>
+            <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, 1))} aria-label="Mese successivo"><ChevronRight size={17} /></button>
+            <button className="btn iconbtn" onClick={onClose} aria-label="Chiudi"><X size={18} /></button>
+          </div>
         </div>
       </div>
 
-      <div className="calfulldetail">
-        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 14 }}>{prettyDay(sel)}</div>
+      <div className="calfullwrap">
+        <div className="calfullbody">
+          <div className="calfulldow">
+            {DOW.map((d) => <span key={d}>{d}</span>)}
+          </div>
+          <div className="calfullgrid">
+            {cells.map((c) => {
+              const dayJobs = jobsByDay[c.key] || [];
+              const dayTasks = tasks.filter((t) => t.date === c.key);
+              const hasIncassato = dayJobs.some((j) => j.status === "incassato");
+              const isSel = c.key === sel, isToday = c.key === todayKey();
+              const cls = "calday" + (c.inMonth ? "" : " out") + (isToday ? " today" : "") + (isSel ? " sel" : "");
+              return (
+                <button key={c.key} className={cls} onClick={() => pickDay(c.key)}>
+                  <span className="n">{c.day}</span>
+                  <span className="caldots">
+                    {dayJobs.length > 0 && <Dot color={hasIncassato ? FC.correct : FC.high} size={5} />}
+                    {dayTasks.slice(0, 2).map((t, i) => (
+                      <Dot key={i} color={t.done ? C.dim : (P[t.pillar] ? P[t.pillar].hue : FC.low)} size={4} />
+                    ))}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* riepilogo soldi del mese, stesso linguaggio della Logistica */}
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <div style={{ flex: 1, background: C.card, border: "1px solid " + C.line, borderRadius: 18, padding: "13px 15px" }}>
+            <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 4 }}>Da incassare</div>
+            <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.03em", color: FC.high }}>{eur(monthPrevisto)}</div>
+          </div>
+          <div style={{ flex: 1, background: C.card, border: "1px solid " + C.line, borderRadius: 18, padding: "13px 15px" }}>
+            <div style={{ fontSize: 11.5, color: C.dim, marginBottom: 4 }}>Incassato</div>
+            <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.03em", color: FC.correct }}>{eur(monthIncassato)}</div>
+          </div>
+        </div>
+
+        <div className="calfulldetail">
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 16 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>{prettyDay(sel)}</div>
+          {sel !== todayKey() && (
+            <button className="btn" onClick={() => pickDay(todayKey())} style={{
+              fontSize: 12.5, fontFamily: "inherit", padding: "6px 13px", borderRadius: 999, flexShrink: 0,
+              border: "1px solid " + C.line, background: "transparent", color: C.mut, cursor: "pointer",
+            }}>Torna a oggi</button>
+          )}
+        </div>
 
         {isPast && (
           <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 8 }}>Abitudini chiuse quel giorno</div>
+            <div className="calsectitle" style={{ color: C.mut }}>Abitudini chiuse quel giorno</div>
             {(state.habits || []).filter((h) => habitState(h, entry).status !== "none").length === 0 && (
               <Empty>Nessuna abitudine registrata per questo giorno.</Empty>
             )}
@@ -2200,7 +2361,7 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
         )}
 
         <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 10 }}>Cose da fare</div>
+          <div className="calsectitle" style={{ color: C.mut }}>Cose da fare</div>
           {forDay.length === 0 && <Empty>Niente per questo giorno.</Empty>}
           {forDay.map((t) => (
             <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0" }}>
@@ -2246,8 +2407,8 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
         </div>
 
         <div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: FC.high }}>Lavori · Set</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+            <span className="calsectitle" style={{ color: FC.high, marginBottom: 0 }}>Lavori · Set</span>
             {!jobForm && (
               <button className="btn" onClick={() => setJobForm({ name: "", safe: "", est: "", date: sel })} style={{
                 fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
@@ -2295,6 +2456,7 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
               </div>
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>,
@@ -4375,9 +4537,130 @@ function Account({ user, sync, onAuth, onLogout }) {
   );
 }
 
-function Config({ state, persist, inc }) {
+/* ═══════════════════════════════════════════════════════════
+   PROFILO — chi sei, come stai andando, cosa vuoi
+   Le impostazioni tecniche stanno nel foglio accanto.
+   ═══════════════════════════════════════════════════════════ */
+function Profilo({ state, persist, user, consistency, medals, kafa, money, onSettings }) {
   const p = state.profile;
   const set = (patch) => persist(Object.assign({}, state, { profile: Object.assign({}, p, patch) }));
+  const fileRef = useRef(null);
+  const [imgErr, setImgErr] = useState(null);
+
+  const pickPhoto = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    setImgErr(null);
+    try { set({ avatar: await shrinkImage(f) }); }
+    catch (x) { setImgErr("Non sono riuscito a leggere quell'immagine. Prova con un JPG o un PNG."); }
+  };
+
+  const unlocked = (medals || []).filter((m) => m.unlocked).length;
+  const dd = p.targetDate ? daysBetween(todayKey(), p.targetDate) : null;
+  const topikLeft = p.topikDate ? daysBetween(todayKey(), p.topikDate) : null;
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+
+      {/* ── chi sei ── */}
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 18 }}>
+          <button className="btn avatarbig" onClick={() => fileRef.current && fileRef.current.click()}
+            aria-label="Cambia foto">
+            {p.avatar ? <img src={p.avatar} alt="" /> : (initials(p.name) || <Camera size={26} />)}
+            <span className="cam"><Camera size={14} /></span>
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <input value={p.name} onChange={(e) => set({ name: e.target.value })}
+              placeholder="Il tuo nome" style={{
+                width: "100%", background: "transparent", border: "none", outline: "none", padding: 0,
+                color: C.txt, fontFamily: "inherit", fontSize: 22, fontWeight: 700, letterSpacing: "-0.03em",
+              }} />
+            <div style={{ fontSize: 13, color: C.dim, marginTop: 4 }}>
+              {user && user.email ? user.email : "Non hai ancora collegato una mail"}
+            </div>
+          </div>
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" onChange={pickPhoto} style={{ display: "none" }} />
+        {imgErr && <p style={{ color: FC.clip, fontSize: 13.5, margin: "0 0 12px", lineHeight: 1.5 }}>{imgErr}</p>}
+        {p.avatar && (
+          <Btn kind="quiet" onClick={() => set({ avatar: "" })} style={{ fontSize: 13, padding: "8px 15px" }}>
+            Togli la foto
+          </Btn>
+        )}
+      </Card>
+
+      {/* ── come stai andando ── */}
+      <Card glow={consistency.streak > 0 ? "#C9A24B" : null}>
+        <Label>Come stai andando</Label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10, marginBottom: 16 }}>
+          <div style={{ background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: "13px 15px" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.035em", color: FC.high }}>{consistency.streak}</div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>giorni di fila</div>
+          </div>
+          <div style={{ background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: "13px 15px" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.035em", color: "#C9A24B" }}>{consistency.best}</div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>il tuo record</div>
+          </div>
+          <div style={{ background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: "13px 15px" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.035em", color: FC.under }}>{kafa.score}<span style={{ fontSize: 14, color: C.dim, fontWeight: 500 }}>/100</span></div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>punteggio KAFA</div>
+          </div>
+          <div style={{ background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: "13px 15px" }}>
+            <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.035em", color: FC.correct }}>{unlocked}<span style={{ fontSize: 14, color: C.dim, fontWeight: 500 }}>/{(medals || []).length}</span></div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>medaglie</div>
+          </div>
+        </div>
+        <Field label="Due righe su dove sei adesso" area rows={3} value={p.bio}
+          onChange={(e) => set({ bio: e.target.value })}
+          placeholder="A che punto sono, cosa mi sta bloccando, cosa voglio nei prossimi mesi…" />
+        <div style={{ fontSize: 13, color: C.mut, lineHeight: 1.6 }}>
+          {eur(money.saved)} messi da parte su {eur(money.target)}
+          {dd != null && dd >= 0 ? " · " + dd + " giorni alla partenza" : ""}
+        </div>
+      </Card>
+
+      {/* ── obiettivi ── */}
+      <Card glow={FC.under}>
+        <Label>I tuoi obiettivi</Label>
+        <p style={{ color: C.mut, fontSize: 14, lineHeight: 1.6, margin: "0 0 16px" }}>
+          Sono le date e i numeri da cui l'app calcola tutto il resto: countdown, runway, proiezioni.
+        </p>
+        <Field label="Data di partenza per la Corea" type="date" value={p.targetDate}
+          onChange={(e) => set({ targetDate: e.target.value })}
+          hint={dd != null && dd >= 0 ? dd + " giorni da oggi." : dd != null ? "È già passata." : null} />
+        <Field label="Data dell'esame TOPIK" type="date" value={p.topikDate || ""}
+          onChange={(e) => set({ topikDate: e.target.value })}
+          hint={topikLeft != null && topikLeft >= 0 ? topikLeft + " giorni da oggi." : null} />
+        <Field label="Budget totale Corea (€)" type="number" value={p.koreaBudget}
+          onChange={(e) => set({ koreaBudget: Number(e.target.value) })} />
+        <Field label="Mesi che deve coprire" type="number" value={p.koreaMonths}
+          onChange={(e) => set({ koreaMonths: Number(e.target.value) })}
+          hint={"Fanno " + eur((Number(p.koreaBudget) || 0) / Math.max(1, Number(p.koreaMonths) || 1)) + " al mese."} />
+      </Card>
+
+      {/* ── le abitudini: sono obiettivi anche loro ── */}
+      <CategorieEditor state={state} persist={persist} />
+
+      <Card>
+        <Label>Impostazioni tecniche</Label>
+        <p style={{ color: C.mut, fontSize: 14, lineHeight: 1.6, margin: "0 0 16px" }}>
+          Account e sincronizzazione, numeri di base, backup dei dati e zona pericolosa.
+        </p>
+        <Btn kind="ghost" full onClick={onSettings}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+            <Settings size={16} /> Apri le impostazioni
+          </span>
+        </Btn>
+      </Card>
+    </div>
+  );
+}
+
+/* ── Editor delle categorie: sta nel Profilo, perché decidere
+   cosa conta come giornata piena è un obiettivo, non un setting. ── */
+function CategorieEditor({ state, persist }) {
   const habits = state.habits || [];
   const [openId, setOpenId] = useState(null);
   const [newMacro, setNewMacro] = useState("");
@@ -4405,7 +4688,6 @@ function Config({ state, persist, inc }) {
   const rmSub = (h, sid) => upd(h.id, { subs: (h.subs || []).filter((x) => x.id !== sid) });
 
   return (
-    <div style={{ display: "grid", gap: 16 }}>
       <Card>
         <Label>Le tue categorie</Label>
         <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 16px" }}>
@@ -4493,17 +4775,26 @@ function Config({ state, persist, inc }) {
           }}><Plus size={18} /></button>
         </div>
       </Card>
+  );
+}
 
+/* ── IMPOSTAZIONI: solo roba tecnica ──────────────────────────
+   Nome, foto, obiettivi e categorie stanno nel Profilo.        */
+function Config({ state, persist, inc }) {
+  const p = state.profile;
+  const set = (patch) => persist(Object.assign({}, state, { profile: Object.assign({}, p, patch) }));
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
       <Card>
         <Label>I numeri di base</Label>
         <Field label="Risparmi attuali (€)" type="number" value={p.savings} onChange={(e) => set({ savings: Number(e.target.value) })} />
         <Field label="Stima grezza di quanto entra al mese (€)" type="number" value={p.incomeEstimate}
           onChange={(e) => set({ incomeEstimate: Number(e.target.value) })}
           hint={"Solo un punto di partenza. Adesso l'app usa " + eur(inc.value) + " · " + inc.tier.toLowerCase() + "."} />
-        <Field label="Budget totale Corea (€)" type="number" value={p.koreaBudget} onChange={(e) => set({ koreaBudget: Number(e.target.value) })} />
-        <Field label="Mesi che deve coprire" type="number" value={p.koreaMonths} onChange={(e) => set({ koreaMonths: Number(e.target.value) })} />
-        <Field label="Data di partenza" type="date" value={p.targetDate} onChange={(e) => set({ targetDate: e.target.value })} />
-        <Field label="Data dell'esame TOPIK" type="date" value={p.topikDate || ""} onChange={(e) => set({ topikDate: e.target.value })} />
+        <div style={{ fontSize: 13, color: C.dim, lineHeight: 1.6 }}>
+          Budget Corea, date e categorie li trovi nel Profilo, sotto la tua foto.
+        </div>
       </Card>
 
       <Backup state={state} persist={persist} />
@@ -4610,7 +4901,7 @@ function SubAdder({ onAdd }) {
 
 /* ── ONBOARDING ────────────────────────────────────────────── */
 function Onboarding({ state, persist }) {
-  const [f, setF] = useState({ savings: "", incomeEstimate: "", koreaBudget: 20000, koreaMonths: 12, targetDate: "" });
+  const [f, setF] = useState({ name: "", savings: "", incomeEstimate: "", koreaBudget: 20000, koreaMonths: 12, targetDate: "" });
   const go = () => persist(Object.assign({}, state, {
     goals: [
       { id: "g_budget", label: "Budget Corea completo", pillar: "cassa", type: "money", target: Number(f.koreaBudget), current: Number(f.savings || 0), deadline: f.targetDate, done: false },
@@ -4619,6 +4910,7 @@ function Onboarding({ state, persist }) {
       { id: "g_set", label: "10 giornate in reparto camera", pillar: "set", type: "milestone", target: 0, current: 0, deadline: "", done: false },
     ],
     profile: Object.assign({}, state.profile, {
+      name: (f.name || "").trim(),
       savings: Number(f.savings || 0), incomeEstimate: Number(f.incomeEstimate || 0),
       koreaBudget: Number(f.koreaBudget || 0), koreaMonths: Number(f.koreaMonths || 24),
       targetDate: f.targetDate, onboarded: true,
@@ -4641,6 +4933,8 @@ function Onboarding({ state, persist }) {
       </Rise>
       <Rise d={100}>
         <Card>
+          <Field label="Come ti chiami" value={f.name} placeholder="Il tuo nome"
+            onChange={(e) => setF(Object.assign({}, f, { name: e.target.value }))} />
           <Field label="Quanto hai da parte adesso (€)" type="number" value={f.savings}
             onChange={(e) => setF(Object.assign({}, f, { savings: e.target.value }))} />
           <Field label="A occhio, quanto entra in un mese normale (€)" type="number" value={f.incomeEstimate}
