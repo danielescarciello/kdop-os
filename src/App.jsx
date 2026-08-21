@@ -4438,27 +4438,38 @@ kafa.metrics.map((m) => "· " + m.name + ": " + Math.round(m.v * m.max) + "/" + 
 
 /* ── CONFIG ────────────────────────────────────────────────── */
 /* ── Account e sincronizzazione ───────────────────────────────
-   Login con magic link: niente password da ricordare, che con
-   l'ADHD è metà della battaglia. Ricevi una mail, tocchi il
-   link, sei dentro e i dati ti seguono su ogni dispositivo.    */
+   Email e password, non magic link. Il link nella mail si apre
+   nel browser di Gmail, che ha uno storage suo: entravi lì e
+   l'app sulla home restava sloggata. Con la password la sessione
+   nasce esattamente dentro l'app che stai guardando, su ogni
+   dispositivo, senza dipendere da nessuna mail.               */
 function Account({ user, sync, onAuth, onLogout }) {
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [pw, setPw] = useState("");
+  const [mode, setMode] = useState("in");        // "in" = entro · "up" = creo
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [note, setNote] = useState(null);
+
+  /* Chi era già entrato col vecchio magic link non ha una password:
+     da qui se la mette, e da quel momento entra ovunque. */
+  const [newPw, setNewPw] = useState("");
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pwMsg, setPwMsg] = useState(null);
 
   useEffect(() => {
     if (!CLOUD_ON) return;
     let alive = true;
+    let unsub = null;
     (async () => {
       const client = await getSb();
-      if (!client) return;
+      if (!client || !alive) return;
       const { data: sub } = client.auth.onAuthStateChange((_e, session) => {
         if (alive && session && session.user) onAuth(session.user);
       });
-      return () => sub && sub.subscription && sub.subscription.unsubscribe();
+      unsub = sub;
     })();
-    return () => { alive = false; };
+    return () => { alive = false; if (unsub && unsub.subscription) unsub.subscription.unsubscribe(); };
   }, []);
 
   if (!CLOUD_ON) {
@@ -4473,18 +4484,47 @@ function Account({ user, sync, onAuth, onLogout }) {
     );
   }
 
-  const send = async () => {
+  const submit = async () => {
     const e = email.trim();
-    if (!e || busy) return;
-    setBusy(true); setErr(null);
+    if (!e || pw.length < 6 || busy) return;
+    setBusy(true); setErr(null); setNote(null);
     try {
       const client = await getSb();
-      const { error } = await client.auth.signInWithOtp({
-        email: e, options: { emailRedirectTo: window.location.origin },
-      });
+      if (mode === "up") {
+        const { data, error } = await client.auth.signUp({ email: e, password: pw });
+        if (error) throw error;
+        if (data && data.session && data.user) onAuth(data.user);
+        else setNote("Account creato. Se Supabase chiede la conferma via mail, aprila una volta sola dal computer: poi entri da qui con la password.");
+      } else {
+        const { data, error } = await client.auth.signInWithPassword({ email: e, password: pw });
+        if (error) throw error;
+        if (data && data.user) onAuth(data.user);
+      }
+    } catch (x) {
+      const m = String((x && x.message) || "");
+      if (/already|registered|exists/i.test(m)) {
+        setErr("Questa mail ha già un account. Passa a “Entro” e usa la password.");
+      } else if (mode === "up") {
+        setErr("Non sono riuscito a creare l'account. La password deve avere almeno 6 caratteri.");
+      } else {
+        setErr("Email o password non corrispondono. Se è il primo accesso su questo telefono, la password è quella che hai impostato dal computer.");
+      }
+    }
+    setBusy(false);
+  };
+
+  const savePw = async () => {
+    if (newPw.length < 6 || busy) return;
+    setBusy(true); setPwMsg(null);
+    try {
+      const client = await getSb();
+      const { error } = await client.auth.updateUser({ password: newPw });
       if (error) throw error;
-      setSent(true);
-    } catch (x) { setErr("Non sono riuscito a inviare il link. Controlla l'indirizzo e riprova."); }
+      setPwMsg({ ok: true, t: "Password impostata. Ora entri con questa mail e questa password su qualsiasi dispositivo." });
+      setNewPw(""); setPwOpen(false);
+    } catch (x) {
+      setPwMsg({ ok: false, t: "Non sono riuscito a salvarla. Serve almeno 6 caratteri." });
+    }
     setBusy(false);
   };
 
@@ -4505,34 +4545,74 @@ function Account({ user, sync, onAuth, onLogout }) {
           {user.email}. I tuoi dati sono su un server e ti seguono su ogni dispositivo dove entri
           con questa mail.
         </p>
-        <Btn kind="quiet" onClick={onLogout}>Esci da questo dispositivo</Btn>
+
+        {pwMsg && (
+          <p style={{ color: pwMsg.ok ? FC.correct : FC.clip, fontSize: 13.5, lineHeight: 1.55, margin: "0 0 14px" }}>
+            {pwMsg.t}
+          </p>
+        )}
+
+        {pwOpen ? (
+          <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+            <input type="password" value={newPw} autoComplete="new-password"
+              onChange={(ev) => setNewPw(ev.target.value)}
+              onKeyDown={(ev) => { if (ev.key === "Enter") { ev.preventDefault(); savePw(); } }}
+              placeholder="Nuova password — almeno 6 caratteri" style={inputBase} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn kind="quiet" style={{ flex: 1 }} onClick={() => { setPwOpen(false); setNewPw(""); }}>Annulla</Btn>
+              <Btn kind="solid" style={{ flex: 1, opacity: newPw.length < 6 || busy ? 0.5 : 1 }} onClick={savePw}>
+                {busy ? "Salvo…" : "Salva"}
+              </Btn>
+            </div>
+          </div>
+        ) : (
+          <Btn kind="ghost" full onClick={() => { setPwOpen(true); setPwMsg(null); }} style={{ marginBottom: 10 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+              <Lock size={15} /> Imposta una password
+            </span>
+          </Btn>
+        )}
+
+        <Btn kind="quiet" full onClick={onLogout}>Esci da questo dispositivo</Btn>
       </Card>
     );
   }
 
+  const up = mode === "up";
   return (
     <Card glow={FC.under}>
       <Label>Sincronizza su tutti i dispositivi</Label>
-      {sent ? (
-        <p style={{ color: C.mut, fontSize: 15, lineHeight: 1.65, margin: 0 }}>
-          Ti ho mandato un link a <strong style={{ color: C.txt }}>{email}</strong>. Aprilo su questo
-          dispositivo per entrare. Da lì in poi i dati si salvano da soli sul cloud, e li ritrovi
-          ovunque entri con la stessa mail.
-        </p>
-      ) : (
-        <>
-          <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 16px" }}>
-            Entra con la mail e i tuoi dati smettono di vivere solo qui: finiscono su un server,
-            al sicuro anche se cambi telefono. Nessuna password — ricevi un link e tocchi.
-          </p>
-          <Field label="La tua email" type="email" value={email} placeholder="tu@esempio.com"
-            onChange={(e) => setEmail(e.target.value)} />
-          {err && <p style={{ color: FC.clip, fontSize: 14, margin: "0 0 14px", lineHeight: 1.55 }}>{err}</p>}
-          <Btn kind="solid" full onClick={send} style={{ opacity: busy ? 0.5 : 1 }}>
-            {busy ? "Invio…" : "Mandami il link"}
-          </Btn>
-        </>
-      )}
+      <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 16px" }}>
+        Entra con mail e password e i tuoi dati smettono di vivere solo qui: finiscono su un server,
+        al sicuro anche se cambi telefono.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+        {[["in", "Entro"], ["up", "Creo l'account"]].map(([id, l]) => (
+          <button key={id} className="btn" onClick={() => { setMode(id); setErr(null); setNote(null); }} style={{
+            flex: 1, fontFamily: "inherit", fontSize: 13.5, fontWeight: mode === id ? 600 : 500,
+            padding: "9px 12px", borderRadius: 999, cursor: "pointer",
+            border: "1px solid " + (mode === id ? "transparent" : C.line),
+            background: mode === id ? C.txt : "transparent", color: mode === id ? "#141416" : C.mut,
+            transition: "all .18s",
+          }}>{l}</button>
+        ))}
+      </div>
+
+      <Field label="La tua email" type="email" value={email} placeholder="tu@esempio.com"
+        autoComplete="username" onChange={(ev) => setEmail(ev.target.value)} />
+      <Field label="Password" type="password" value={pw} placeholder="Almeno 6 caratteri"
+        autoComplete={up ? "new-password" : "current-password"}
+        onChange={(ev) => setPw(ev.target.value)}
+        onKeyDown={(ev) => { if (ev.key === "Enter") { ev.preventDefault(); submit(); } }} />
+
+      {err && <p style={{ color: FC.clip, fontSize: 14, margin: "0 0 14px", lineHeight: 1.55 }}>{err}</p>}
+      {note && <p style={{ color: FC.high, fontSize: 14, margin: "0 0 14px", lineHeight: 1.55 }}>{note}</p>}
+
+      <Btn kind="solid" full onClick={submit}
+        style={{ opacity: busy || !email.trim() || pw.length < 6 ? 0.5 : 1 }}>
+        {busy ? (up ? "Creo…" : "Entro…") : (up ? "Crea l'account" : "Entra")}
+      </Btn>
     </Card>
   );
 }
