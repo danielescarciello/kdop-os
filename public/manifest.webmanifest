@@ -1,0 +1,20 @@
+{
+  "name": "K-DOP OS",
+  "short_name": "K-DOP OS",
+  "description": "Sistema operativo personale: Italia, KAFA, direttore della fotografia in Corea.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#121214",
+  "theme_color": "#121214",
+  "lang": "it",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

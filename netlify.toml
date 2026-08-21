@@ -1,0 +1,17 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA: ogni percorso torna all'app
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Proxy per l'API Anthropic.
+# La chiave NON sta nel codice: la metti fra le variabili d'ambiente
+# di Netlify (Site settings > Environment variables > ANTHROPIC_API_KEY)
+# e la funzione in netlify/functions/anthropic.js la usa lato server.
