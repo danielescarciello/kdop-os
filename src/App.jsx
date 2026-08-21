@@ -111,7 +111,7 @@ function aiHeaders() {
    in locale e si sincronizza appena torna.
    Le chiavi stanno in variabili d'ambiente Vite (VITE_...).    */
 const SB_URL = import.meta.env.VITE_SUPABASE_URL || "";
-const SB_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+const SB_ANON = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 const CLOUD_ON = !!(SB_URL && SB_ANON);
 
 let sb = null;
@@ -770,10 +770,10 @@ function computeConsistency(state) {
    almeno una volta, e resta tua per sempre: nessuna medaglia si
    rispegne se salti un giorno. È un museo, non una fiche.       */
 const MEDALS = [
-  { id: "d1",   days: 1,   name: "Il primo colpo",      sub: "Un giorno tenuto",       img: "/medals/1.jpg" },
-  { id: "d5",   days: 5,   name: "Cinque di fila",       sub: "La settimana regge",     img: "/medals/5.jpg" },
-  { id: "d10",  days: 10,  name: "Doppia cifra",         sub: "Non è più un caso",      img: "/medals/10.jpg" },
-  { id: "d20",  days: 20,  name: "Il guardiano",         sub: "Venti giorni",           img: "/medals/15.jpg" },
+  { id: "d1",   days: 1,   name: "Il primo colpo",      sub: "Un giorno tenuto",       img: "/medals/1.png" },
+  { id: "d5",   days: 5,   name: "Cinque di fila",       sub: "La settimana regge",     img: "/medals/5.png" },
+  { id: "d10",  days: 10,  name: "Doppia cifra",         sub: "Non è più un caso",      img: "/medals/10.png" },
+  { id: "d20",  days: 20,  name: "Il guardiano",         sub: "Venti giorni",           img: "/medals/15.png" },
   { id: "d50",  days: 50,  name: "Cinquanta",            sub: "Metà strada al mito",    img: null },
   { id: "d100", days: 100, name: "Leggenda",             sub: "Cento giorni",           img: null },
 ];
@@ -1229,9 +1229,21 @@ const Styles = () => (
     @keyframes breathe { 0%,100% { opacity: .5; } 50% { opacity: .95; } }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: none; } }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+    @keyframes unlockPop {
+      0% { transform: scale(.4) rotate(-12deg); opacity: 0; }
+      55% { transform: scale(1.14) rotate(4deg); opacity: 1; }
+      100% { transform: scale(1) rotate(0); opacity: 1; }
+    }
+    @keyframes glowPulse {
+      0%,100% { opacity: .35; transform: scale(.92); }
+      50% { opacity: .75; transform: scale(1.05); }
+    }
     .rise { animation: rise .42s cubic-bezier(.2,.8,.25,1) both; }
     .pop  { animation: pop .34s cubic-bezier(.3,1.4,.5,1); }
     .breathe { animation: breathe 3.2s ease-in-out infinite; }
+    .floaty { animation: floaty 3.6s ease-in-out infinite; }
+    .unlockPop { animation: unlockPop .6s cubic-bezier(.34,1.56,.64,1) both; }
 
     /* ── barra superiore ── */
     .topbar {
@@ -1314,6 +1326,23 @@ const Styles = () => (
       background: linear-gradient(90deg, transparent, rgba(255,255,255,.28), transparent);
       animation: shine 4.5s ease-in-out infinite; animation-delay: 1s;
     }
+
+    /* ── card medaglia nella galleria ── */
+    .medalcard { transition: transform .18s cubic-bezier(.34,1.4,.6,1), border-color .2s, box-shadow .2s; }
+    @media (hover: hover) { .medalcard.on:hover { transform: translateY(-4px); box-shadow: 0 12px 28px rgba(0,0,0,.28); } }
+    .medalcard.on:active { transform: scale(.97); }
+    .medalglow {
+      position: absolute; inset: 8px; border-radius: 999px; z-index: 0;
+      background: radial-gradient(circle, rgba(201,162,75,.45), transparent 68%);
+      filter: blur(6px); animation: glowPulse 3.4s ease-in-out infinite;
+    }
+    .medalimg-wrap { position: relative; z-index: 1; overflow: hidden; border-radius: 18px; }
+    .medalimg-wrap::after {
+      content: ""; position: absolute; top: -30%; left: 0; width: 45%; height: 160%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+      transform: translateX(-160%) rotate(8deg); pointer-events: none;
+    }
+    @media (hover: hover) { .medalcard.on:hover .medalimg-wrap::after { animation: shine .9s ease-in-out; } }
 
     .iconbtn {
       width: 38px; height: 38px; border-radius: 999px; flex-shrink: 0;
@@ -1429,7 +1458,6 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
             <div>
               <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
                 {allDone ? "Giornata chiusa." : score === 0 ? "Si comincia." : held ? "Giornata salva." : "In movimento."}
-                <span style={{ display: "inline-block", marginLeft: 8, fontSize: 15, transform: "rotate(-18deg)" }}>🍌</span>
               </div>
               <div style={{ fontSize: 14, color: C.mut, marginTop: 3 }}>
                 {allDone ? "Tutto verde. Il resto di oggi è tuo."
@@ -1654,20 +1682,24 @@ function Trofei({ state, persist, consistency, medals }) {
           const pinned = state.pinnedMedal === m.id;
           return (
             <Rise key={m.id} d={i * 60}>
-              <button className="btn" onClick={() => m.unlocked && pin(m.id)} style={{
+              <button className={"btn medalcard" + (m.unlocked ? " on" : "")} onClick={() => m.unlocked && pin(m.id)} style={{
                 width: "100%", background: C.card, border: "1px solid " + (pinned ? "#C9A24B" : C.line),
                 borderRadius: 22, padding: "20px 14px 16px", cursor: m.unlocked ? "pointer" : "default",
                 fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", gap: 10,
-                boxShadow: C.shadow, position: "relative",
+                boxShadow: pinned ? "0 0 0 1px #C9A24B55, 0 10px 26px rgba(201,162,75,.18)" : C.shadow,
+                position: "relative",
               }}>
                 <div style={{ width: 104, height: 104, display: "grid", placeItems: "center", position: "relative" }}>
+                  {m.unlocked && m.img && <div className="medalglow" />}
                   {m.img ? (
-                    <img src={m.img} alt="" style={{
-                      width: "100%", height: "100%", objectFit: "contain",
-                      filter: m.unlocked ? "drop-shadow(0 3px 12px rgba(201,162,75,.3))"
-                        : "grayscale(1) brightness(.4) contrast(.8)",
-                      opacity: m.unlocked ? 1 : 0.5, transition: "filter .3s",
-                    }} />
+                    <div className="medalimg-wrap" style={{ width: "100%", height: "100%" }}>
+                      <img src={m.img} alt="" className={m.unlocked ? "floaty" : undefined} style={{
+                        width: "100%", height: "100%", objectFit: "contain",
+                        filter: m.unlocked ? "drop-shadow(0 4px 14px rgba(201,162,75,.35))"
+                          : "grayscale(1) brightness(.4) contrast(.8)",
+                        opacity: m.unlocked ? 1 : 0.5, transition: "filter .3s",
+                      }} />
+                    </div>
                   ) : (
                     <div style={{ width: 86, height: 86, borderRadius: 999,
                       background: m.unlocked ? "#C9A24B22" : C.card2,
@@ -1676,7 +1708,7 @@ function Trofei({ state, persist, consistency, medals }) {
                     </div>
                   )}
                   {!m.unlocked && (
-                    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
+                    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 2 }}>
                       <div style={{ width: 34, height: 34, borderRadius: 999, background: C.bg + "D0",
                         display: "grid", placeItems: "center", border: "1px solid " + C.line }}>
                         <Lock size={15} color={C.mut} />
