@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   Check, X, Plus, ChevronDown, Send, Settings, Wallet, Globe,
   Camera, Zap, Sparkles, Plane, GraduationCap, Briefcase,
@@ -472,6 +473,26 @@ const prettyDay = (k) => {
   if (k === addDays(1)) return "Domani";
   const d = new Date(k);
   return DOW[d.getDay()] + " " + d.getDate() + "/" + (d.getMonth() + 1);
+};
+const MONTH_NAMES = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+  "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
+const monthLabel = (ym) => MONTH_NAMES[Number(ym.slice(5, 7)) - 1] + " " + ym.slice(0, 4);
+const shiftMonth = (ym, delta) => {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+};
+const monthGrid = (ym) => {
+  const [y, m] = ym.split("-").map(Number);
+  const startDow = new Date(y, m - 1, 1).getDay();
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const total = Math.ceil((startDow + daysInMonth) / 7) * 7;
+  const cells = [];
+  for (let i = 0; i < total; i++) {
+    const d = new Date(y, m - 1, i - startDow + 1);
+    cells.push({ key: dayKey(d), day: d.getDate(), inMonth: d.getMonth() === m - 1 });
+  }
+  return cells;
 };
 
 /* ── motore: reddito auto-calibrante ───────────────────────── */
@@ -1417,7 +1438,8 @@ const Styles = () => (
       padding: 20px; animation: fadeIn .22s ease both;
     }
     .wrapcard {
-      position: relative; width: min(92vw, 420px); background: linear-gradient(180deg, #18181b, #0c0c0e);
+      position: relative; width: min(92vw, 420px); max-height: 88vh; overflow-y: auto;
+      background: linear-gradient(180deg, #18181b, #0c0c0e);
       border: 1px solid ${C.line2}; border-radius: 28px; padding: 40px 26px 28px; text-align: center;
       box-shadow: 0 30px 90px rgba(0,0,0,.65); animation: rise .4s cubic-bezier(.2,.8,.25,1) both;
     }
@@ -1442,6 +1464,26 @@ const Styles = () => (
       border: 1px solid ${C.line}; background: transparent; color: ${C.mut};
       display: grid; place-items: center; cursor: pointer;
     }
+
+    /* ── Calendario a schermo intero ── */
+    .calfullscrim {
+      position: fixed; inset: 0; z-index: 80; background: ${C.bg};
+      display: flex; flex-direction: column; overflow-y: auto;
+      animation: fadeIn .2s ease both;
+    }
+    .calfullhead {
+      position: sticky; top: 0; z-index: 2; background: ${C.bg};
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: calc(env(safe-area-inset-top) + 14px) 16px 12px; border-bottom: 1px solid ${C.line};
+    }
+    .calfullmonth { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; }
+    .calfullbody { padding: 16px; width: 100%; box-sizing: border-box; }
+    .calfulldow, .calfullgrid {
+      display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 4px; width: 100%; box-sizing: border-box;
+    }
+    .calfulldow { margin-bottom: 6px; text-align: center; }
+    .calfulldow span { font-size: 10.5px; color: ${C.dim}; text-transform: uppercase; letter-spacing: .04em; }
+    .calfulldetail { padding: 4px 16px 32px; border-top: 1px solid ${C.line}; margin-top: 6px; }
     .btn { transition: transform .12s ease, opacity .15s; }
     .btn:active { transform: scale(.95); }
     .row { transition: background .15s; border-radius: 12px; }
@@ -1925,9 +1967,10 @@ function Trofei({ state, persist, consistency, medals }) {
         })}
       </div>
 
-      {zoom && (
+      {zoom && createPortal(
         <MedalZoom medal={zoom} pinned={state.pinnedMedal === zoom.id}
-          onPin={() => { pin(zoom.id); }} onClose={() => setZoom(null)} />
+          onPin={() => { pin(zoom.id); }} onClose={() => setZoom(null)} />,
+        document.body
       )}
     </div>
   );
@@ -1987,204 +2030,275 @@ function MedalZoom({ medal: m, pinned, onPin, onClose }) {
 }
 
 function Agenda({ state, persist, tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
-  const [sel, setSel] = useState(todayKey());
+  const [full, setFull] = useState(false);
+  const [openDay, setOpenDay] = useState(todayKey());
+  const days = Array.from({ length: 21 }, (_, i) => addDays(i));
+
+  const openOn = (k) => { setOpenDay(k); setFull(true); };
+
+  return (
+    <>
+      <Card glow={FC.low} onClick={() => openOn(todayKey())} style={{ cursor: "pointer" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <CalendarDays size={15} color={FC.low} />
+            <span style={{ fontSize: 13, color: FC.low, fontWeight: 600 }}>Agenda</span>
+          </div>
+          <span style={{ fontSize: 12, color: C.dim }}>tocca per aprire</span>
+        </div>
+        <p style={{ fontSize: 14.5, color: C.mut, margin: "0 0 16px", lineHeight: 1.6 }}>
+          Cose da fare, lavori e set fissati. Tocca un giorno per il calendario completo.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0,1fr))", gap: 6, width: "100%", boxSizing: "border-box" }}>
+          {days.map((k) => {
+            const n = tasks.filter((t) => t.date === k);
+            const hasJob = (state.scheduledJobs || []).some((j) => j.date === k);
+            const isToday = k === todayKey();
+            const dd = new Date(k);
+            return (
+              <button key={k} className="btn" onClick={(e) => { e.stopPropagation(); openOn(k); }} style={{
+                aspectRatio: "1", minWidth: 0, borderRadius: 14, cursor: "pointer", fontFamily: "inherit",
+                border: "1px solid " + (isToday ? C.line2 : C.line), background: "transparent",
+                color: C.mut, display: "flex", flexDirection: "column", alignItems: "center",
+                justifyContent: "center", gap: 3, padding: 2, boxSizing: "border-box", overflow: "hidden",
+              }}>
+                <span style={{ fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: ".04em" }}>{DOW[dd.getDay()]}</span>
+                <span style={{ fontSize: 14, fontWeight: isToday ? 700 : 500, lineHeight: 1 }}>{dd.getDate()}</span>
+                <span style={{ height: 5, display: "flex", gap: 2, alignItems: "center" }}>
+                  {n.slice(0, 2).map((t, i) => <Dot key={i} color={t.done ? C.dim : (P[t.pillar] ? P[t.pillar].hue : FC.low)} size={4} />)}
+                  {hasJob && <Dot color={FC.high} size={4} />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {full && (
+        <CalendarFull state={state} persist={persist} tasks={tasks} addTask={addTask} toggleTask={toggleTask}
+          editTask={editTask} rmTask={rmTask} exposure={exposure} initialDay={openDay} onClose={() => setFull(false)} />
+      )}
+    </>
+  );
+}
+
+function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rmTask, exposure, initialDay, onClose }) {
+  const [ym, setYm] = useState((initialDay || todayKey()).slice(0, 7));
+  const [sel, setSel] = useState(initialDay || todayKey());
   const [txt, setTxt] = useState("");
   const [pil, setPil] = useState("occhio");
   const [jobForm, setJobForm] = useState(null);
-  const days = Array.from({ length: 21 }, (_, i) => addDays(i));
-  const forDay = tasks.filter((t) => t.date === sel);
-  const dark = exposure.filter((e) => e.possible > 0).sort((a, b) => a.ratio - b.ratio)[0];
+
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const esc = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", esc); };
+  }, []);
+
+  const cells = useMemo(() => monthGrid(ym), [ym]);
+  const jobsByDay = useMemo(() => {
+    const map = {};
+    (state.scheduledJobs || []).forEach((j) => { (map[j.date] = map[j.date] || []).push(j); });
+    return map;
+  }, [state.scheduledJobs]);
+
   const isPast = sel < todayKey();
   const entry = (state.log && state.log[sel]) || {};
-  const jobsForDay = (state.scheduledJobs || []).filter((j) => j.date === sel);
+  const forDay = tasks.filter((t) => t.date === sel);
+  const jobsForDay = jobsByDay[sel] || [];
+  const dark = exposure.filter((e) => e.possible > 0).sort((a, b) => a.ratio - b.ratio)[0];
 
-  const submit = () => {
-    if (!txt.trim()) return;
-    addTask(sel, txt.trim(), pil);
-    setTxt("");
-  };
+  const pickDay = (k) => { setSel(k); if (k.slice(0, 7) !== ym) setYm(k.slice(0, 7)); };
+
+  const submit = () => { if (!txt.trim()) return; addTask(sel, txt.trim(), pil); setTxt(""); };
 
   const addJob = () => {
     if (!jobForm || !jobForm.name || !jobForm.name.trim()) return;
     const job = {
       id: "sj" + Date.now() + Math.random().toString(36).slice(2, 7),
-      date: sel, name: jobForm.name.trim(),
-      safeAmount: Number(jobForm.safe) || 0,
-      estAmount: Number(jobForm.est) || 0,
+      date: jobForm.date || sel, name: jobForm.name.trim(),
+      safeAmount: Number(jobForm.safe) || 0, estAmount: Number(jobForm.est) || 0,
+      status: "previsto",
     };
     persist(Object.assign({}, state, { scheduledJobs: (state.scheduledJobs || []).concat([job]) }));
     setJobForm(null);
   };
-  const rmJob = (id) => {
-    persist(Object.assign({}, state, { scheduledJobs: (state.scheduledJobs || []).filter((j) => j.id !== id) }));
-  };
+  const rmJob = (id) => persist(Object.assign({}, state, {
+    scheduledJobs: (state.scheduledJobs || []).filter((j) => j.id !== id),
+  }));
+  const toggleJobStatus = (id) => persist(Object.assign({}, state, {
+    scheduledJobs: (state.scheduledJobs || []).map((j) =>
+      j.id === id ? Object.assign({}, j, { status: j.status === "incassato" ? "previsto" : "incassato" }) : j),
+  }));
 
-  const quick = [
-    ["Oggi", todayKey()], ["Domani", addDays(1)], ["Dopodomani", addDays(2)],
-  ];
-
-  return (
-    <Card glow={FC.low}>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 6 }}>
-        <CalendarDays size={15} color={FC.low} />
-        <span style={{ fontSize: 13, color: FC.low, fontWeight: 600 }}>Agenda</span>
-      </div>
-      <p style={{ fontSize: 14.5, color: C.mut, margin: "0 0 16px", lineHeight: 1.6 }}>
-        Scrivi una cosa e assegnala a un giorno qualsiasi. Quelle di oggi salgono in cima da sole.
-      </p>
-
-      {/* strip di 21 giorni */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 18 }}>
-        {days.map((k) => {
-          const n = tasks.filter((t) => t.date === k);
-          const open = n.filter((t) => !t.done).length;
-          const isSel = k === sel, isToday = k === todayKey();
-          const dd = new Date(k);
-          return (
-            <button key={k} className="btn" onClick={() => setSel(k)} style={{
-              aspectRatio: "1", borderRadius: 14, cursor: "pointer", fontFamily: "inherit",
-              border: "1px solid " + (isSel ? FC.low + "77" : isToday ? C.line2 : C.line),
-              background: isSel ? FC.low + "1F" : "transparent",
-              color: isSel ? C.txt : C.mut, display: "flex", flexDirection: "column",
-              alignItems: "center", justifyContent: "center", gap: 3, padding: 2, transition: "all .18s",
-            }}>
-              <span style={{ fontSize: 9.5, color: C.dim, textTransform: "uppercase", letterSpacing: ".04em" }}>{DOW[dd.getDay()]}</span>
-              <span style={{ fontSize: 15, fontWeight: isToday ? 700 : 500, lineHeight: 1 }}>{dd.getDate()}</span>
-              <span style={{ height: 5, display: "flex", gap: 2, alignItems: "center" }}>
-                {n.slice(0, 3).map((t, i) => <Dot key={i} color={t.done ? C.dim : (P[t.pillar] ? P[t.pillar].hue : FC.low)} size={4} />)}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* giorno selezionato */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 }}>
-        <span style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.02em" }}>{prettyDay(sel)}</span>
-        <div style={{ display: "flex", gap: 6 }}>
-          {quick.map(([l, k]) => (
-            <button key={l} className="btn" onClick={() => setSel(k)} style={{
-              fontSize: 12, fontFamily: "inherit", padding: "5px 11px", borderRadius: 999, cursor: "pointer",
-              border: "1px solid " + (sel === k ? C.line2 : "transparent"),
-              background: sel === k ? C.card2 : "transparent", color: sel === k ? C.txt : C.dim,
-            }}>{l}</button>
-          ))}
+  return createPortal(
+    <div className="calfullscrim">
+      <div className="calfullhead">
+        <button className="btn iconbtn" onClick={onClose} aria-label="Chiudi"><X size={18} /></button>
+        <div className="calfullmonth">
+          <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, -1))} aria-label="Mese precedente"><ChevronLeft size={17} /></button>
+          <span>{monthLabel(ym)}</span>
+          <button className="btn iconbtn" onClick={() => setYm(shiftMonth(ym, 1))} aria-label="Mese successivo"><ChevronRight size={17} /></button>
         </div>
+        <button className="btn" onClick={() => pickDay(todayKey())} style={{
+          fontSize: 12.5, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999,
+          border: "1px solid " + C.line, background: "transparent", color: C.mut, cursor: "pointer",
+        }}>Oggi</button>
       </div>
 
-      {isPast && (
-        <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 10 }}>Abitudini chiuse quel giorno</div>
-          {(state.habits || []).filter((h) => habitState(h, entry).status !== "none").length === 0 && (
-            <Empty>Nessuna abitudine registrata per questo giorno.</Empty>
-          )}
-          {(state.habits || []).map((h) => {
-            const st = habitState(h, entry);
-            if (st.status === "none") return null;
-            const pillar = P[h.pillar];
+      <div className="calfullbody">
+        <div className="calfulldow">
+          {DOW.map((d) => <span key={d}>{d}</span>)}
+        </div>
+        <div className="calfullgrid">
+          {cells.map((c) => {
+            const dayJobs = jobsByDay[c.key] || [];
+            const hasIncassato = dayJobs.some((j) => j.status === "incassato");
+            const isSel = c.key === sel, isToday = c.key === todayKey();
             return (
-              <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
-                <Dot color={st.color} size={8} />
-                <span style={{ fontSize: 14, color: C.txt }}>{h.label}</span>
-                <span style={{ fontSize: 12, color: C.dim, marginLeft: "auto" }}>
-                  {st.status === "full" ? "fatta" : st.done + "/" + st.tot}
-                </span>
-              </div>
+              <button key={c.key} className="btn" onClick={() => pickDay(c.key)} style={{
+                aspectRatio: "1", minWidth: 0, borderRadius: 12, cursor: "pointer", fontFamily: "inherit",
+                border: "1px solid " + (isSel ? FC.low + "77" : isToday ? C.line2 : "transparent"),
+                background: isSel ? FC.low + "1F" : "transparent",
+                color: !c.inMonth ? C.dim : isSel ? C.txt : C.mut,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                gap: 3, padding: 2, boxSizing: "border-box", overflow: "hidden", opacity: c.inMonth ? 1 : 0.45,
+              }}>
+                <span style={{ fontSize: 14, fontWeight: isToday ? 700 : 500 }}>{c.day}</span>
+                {dayJobs.length > 0 && <Dot color={hasIncassato ? FC.correct : FC.high} size={5} />}
+              </button>
             );
           })}
         </div>
-      )}
-
-      {forDay.length === 0 && <Empty>Niente per questo giorno.</Empty>}
-      {forDay.map((t) => (
-        <div key={t.id} className="row" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 8px" }}>
-          <button className="btn" onClick={() => toggleTask(t.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", marginTop: 1 }}>
-            <Radio done={t.done} color={P[t.pillar] ? P[t.pillar].hue : FC.low} size={21} />
-          </button>
-          <input value={t.text} onChange={(e) => editTask(t.id, e.target.value)} style={{
-            flex: 1, background: "transparent", border: "none", outline: "none", padding: 0,
-            color: t.done ? C.dim : C.txt, fontSize: 15.5, fontFamily: "inherit", lineHeight: 1.5,
-            textDecoration: t.done ? "line-through" : "none",
-          }} />
-          <button className="btn" onClick={() => rmTask(t.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
-            <X size={13} />
-          </button>
-        </div>
-      ))}
-
-      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-        <input value={txt} onChange={(e) => setTxt(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
-          placeholder={"Cosa fai " + prettyDay(sel).toLowerCase() + "?"}
-          style={Object.assign({}, inputBase, { flex: 1 })} />
-        <button className="btn" onClick={submit} style={{
-          width: 48, borderRadius: 16, border: "none", flexShrink: 0,
-          background: C.txt, color: "#141416", cursor: "pointer", display: "grid", placeItems: "center",
-        }}><Plus size={18} /></button>
       </div>
 
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
-        {PILLARS.map((p) => (
-          <button key={p.id} className="btn" onClick={() => setPil(p.id)} style={{
-            fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
-            border: "1px solid " + (pil === p.id ? p.hue + "55" : C.line),
-            background: pil === p.id ? p.hue + "1A" : "transparent",
-            color: pil === p.id ? p.hue : C.dim, transition: "all .18s",
-          }}>{p.name}</button>
-        ))}
-      </div>
+      <div className="calfulldetail">
+        <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 14 }}>{prettyDay(sel)}</div>
 
-      {dark && (
-        <button className="btn" onClick={() => { addTask(sel, "Riaccendere " + dark.name.toLowerCase(), dark.id); }} style={{
-          marginTop: 12, fontSize: 13, fontFamily: "inherit", padding: "8px 14px", borderRadius: 999,
-          border: "1px dashed " + C.line2, background: "transparent", color: C.mut, cursor: "pointer",
-        }}>+ Riaccendere {dark.name.toLowerCase()}</button>
-      )}
+        {isPast && (
+          <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 8 }}>Abitudini chiuse quel giorno</div>
+            {(state.habits || []).filter((h) => habitState(h, entry).status !== "none").length === 0 && (
+              <Empty>Nessuna abitudine registrata per questo giorno.</Empty>
+            )}
+            {(state.habits || []).map((h) => {
+              const st = habitState(h, entry);
+              if (st.status === "none") return null;
+              return (
+                <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+                  <Dot color={st.color} size={8} />
+                  <span style={{ fontSize: 14, color: C.txt }}>{h.label}</span>
+                  <span style={{ fontSize: 12, color: C.dim, marginLeft: "auto" }}>
+                    {st.status === "full" ? "fatta" : st.done + "/" + st.tot}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-      <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid " + C.line }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: FC.high }}>Lavori · Set</span>
-          {!jobForm && (
-            <button className="btn" onClick={() => setJobForm({ name: "", safe: "", est: "" })} style={{
-              fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
-              border: "1px dashed " + C.line2, background: "transparent", color: C.mut,
-            }}>+ Aggiungi lavoro</button>
+        <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: C.mut, marginBottom: 10 }}>Cose da fare</div>
+          {forDay.length === 0 && <Empty>Niente per questo giorno.</Empty>}
+          {forDay.map((t) => (
+            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0" }}>
+              <button className="btn" onClick={() => toggleTask(t.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", marginTop: 1 }}>
+                <Radio done={t.done} color={P[t.pillar] ? P[t.pillar].hue : FC.low} size={20} />
+              </button>
+              <input value={t.text} onChange={(e) => editTask(t.id, e.target.value)} style={{
+                flex: 1, background: "transparent", border: "none", outline: "none", padding: 0,
+                color: t.done ? C.dim : C.txt, fontSize: 15, fontFamily: "inherit", lineHeight: 1.5,
+                textDecoration: t.done ? "line-through" : "none",
+              }} />
+              <button className="btn" onClick={() => rmTask(t.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+            <input value={txt} onChange={(e) => setTxt(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
+              placeholder={"Cosa fai " + prettyDay(sel).toLowerCase() + "?"}
+              style={Object.assign({}, inputBase, { flex: 1 })} />
+            <button className="btn" onClick={submit} style={{
+              width: 44, borderRadius: 14, border: "none", flexShrink: 0,
+              background: C.txt, color: "#141416", cursor: "pointer", display: "grid", placeItems: "center",
+            }}><Plus size={17} /></button>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+            {PILLARS.map((p) => (
+              <button key={p.id} className="btn" onClick={() => setPil(p.id)} style={{
+                fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
+                border: "1px solid " + (pil === p.id ? p.hue + "55" : C.line),
+                background: pil === p.id ? p.hue + "1A" : "transparent",
+                color: pil === p.id ? p.hue : C.dim, transition: "all .18s",
+              }}>{p.name}</button>
+            ))}
+          </div>
+          {dark && (
+            <button className="btn" onClick={() => { addTask(sel, "Riaccendere " + dark.name.toLowerCase(), dark.id); }} style={{
+              marginTop: 10, fontSize: 13, fontFamily: "inherit", padding: "8px 14px", borderRadius: 999,
+              border: "1px dashed " + C.line2, background: "transparent", color: C.mut, cursor: "pointer",
+            }}>+ Riaccendere {dark.name.toLowerCase()}</button>
           )}
         </div>
 
-        {jobsForDay.length === 0 && !jobForm && <Empty>Nessun lavoro fissato per questo giorno.</Empty>}
-        {jobsForDay.map((j) => (
-          <div key={j.id} className="row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 8px" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 14.5, color: C.txt, fontWeight: 500 }}>{j.name}</div>
-              <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
-                Sicuro {eur(j.safeAmount)}{j.estAmount ? " · stimato +" + eur(j.estAmount) : ""}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: FC.high }}>Lavori · Set</span>
+            {!jobForm && (
+              <button className="btn" onClick={() => setJobForm({ name: "", safe: "", est: "", date: sel })} style={{
+                fontSize: 12, fontFamily: "inherit", padding: "6px 12px", borderRadius: 999, cursor: "pointer",
+                border: "1px dashed " + C.line2, background: "transparent", color: C.mut,
+              }}>+ Aggiungi lavoro</button>
+            )}
+          </div>
+
+          {jobsForDay.length === 0 && !jobForm && <Empty>Nessun lavoro fissato per questo giorno.</Empty>}
+          {jobsForDay.map((j) => (
+            <div key={j.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 0", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontSize: 14.5, color: C.txt, fontWeight: 500 }}>{j.name}</div>
+                <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>
+                  Sicuro {eur(j.safeAmount)}{j.estAmount ? " · stimato +" + eur(j.estAmount) : ""}
+                </div>
+              </div>
+              <button className="btn" onClick={() => toggleJobStatus(j.id)} style={{
+                fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", padding: "5px 10px", borderRadius: 999, cursor: "pointer",
+                border: "1px solid " + (j.status === "incassato" ? FC.correct + "55" : C.line2),
+                background: j.status === "incassato" ? FC.correct + "1A" : "transparent",
+                color: j.status === "incassato" ? FC.correct : C.dim, flexShrink: 0,
+              }}>{j.status === "incassato" ? "✓ Incassato" : "Da incassare"}</button>
+              <button className="btn" onClick={() => rmJob(j.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4, flexShrink: 0 }}>
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+
+          {jobForm && (
+            <div style={{ display: "grid", gap: 10, marginTop: 8, background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: 14 }}>
+              <input value={jobForm.name} onChange={(e) => setJobForm(Object.assign({}, jobForm, { name: e.target.value }))}
+                placeholder="Nome lavoro / set" style={inputBase} />
+              <input type="date" value={jobForm.date} onChange={(e) => setJobForm(Object.assign({}, jobForm, { date: e.target.value }))}
+                style={inputBase} />
+              <div style={{ display: "flex", gap: 10 }}>
+                <input value={jobForm.safe} onChange={(e) => setJobForm(Object.assign({}, jobForm, { safe: e.target.value }))}
+                  placeholder="Importo sicuro €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
+                <input value={jobForm.est} onChange={(e) => setJobForm(Object.assign({}, jobForm, { est: e.target.value }))}
+                  placeholder="Importo stimato €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn kind="quiet" style={{ flex: 1 }} onClick={() => setJobForm(null)}>Annulla</Btn>
+                <Btn kind="solid" style={{ flex: 1 }} onClick={addJob}>Salva</Btn>
               </div>
             </div>
-            <button className="btn" onClick={() => rmJob(j.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4, flexShrink: 0 }}>
-              <X size={13} />
-            </button>
-          </div>
-        ))}
-
-        {jobForm && (
-          <div style={{ display: "grid", gap: 10, marginTop: 8, background: C.card2, border: "1px solid " + C.line, borderRadius: 16, padding: 14 }}>
-            <input value={jobForm.name} onChange={(e) => setJobForm(Object.assign({}, jobForm, { name: e.target.value }))}
-              placeholder="Nome lavoro / set" style={inputBase} />
-            <div style={{ display: "flex", gap: 10 }}>
-              <input value={jobForm.safe} onChange={(e) => setJobForm(Object.assign({}, jobForm, { safe: e.target.value }))}
-                placeholder="Importo sicuro €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
-              <input value={jobForm.est} onChange={(e) => setJobForm(Object.assign({}, jobForm, { est: e.target.value }))}
-                placeholder="Importo stimato €" inputMode="decimal" style={Object.assign({}, inputBase, { flex: 1 })} />
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn kind="quiet" style={{ flex: 1 }} onClick={() => setJobForm(null)}>Annulla</Btn>
-              <Btn kind="solid" style={{ flex: 1 }} onClick={addJob}>Salva</Btn>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-    </Card>
+    </div>,
+    document.body
   );
 }
 
@@ -3903,31 +4017,45 @@ function Arsenale({ state, persist, money }) {
 }
 
 function MonthOutlook({ scheduledJobs }) {
-  const now = new Date();
-  const ym = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
-  const thisMonth = (scheduledJobs || []).filter((j) => (j.date || "").startsWith(ym));
-  const safe = thisMonth.reduce((s, j) => s + (Number(j.safeAmount) || 0), 0);
-  const est = thisMonth.reduce((s, j) => s + (Number(j.estAmount) || 0), 0);
-  const pot = safe + est;
+  const [ym, setYm] = useState(todayKey().slice(0, 7));
+  const list = (scheduledJobs || []).filter((j) => (j.date || "").startsWith(ym));
+  const incassatiN = list.filter((j) => j.status === "incassato").length;
+  const previsto = list.filter((j) => j.status !== "incassato")
+    .reduce((s, j) => s + (Number(j.safeAmount) || 0) + (Number(j.estAmount) || 0), 0);
+  const incassato = list.filter((j) => j.status === "incassato")
+    .reduce((s, j) => s + (Number(j.safeAmount) || 0) + (Number(j.estAmount) || 0), 0);
   return (
     <Card glow={FC.high}>
-      <Label>Prospettiva di questo mese</Label>
-      {thisMonth.length === 0 ? (
-        <Empty>Nessun lavoro fissato nell'Agenda per questo mese. Aggiungine uno da un giorno del calendario.</Empty>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 8 }}>
+        <Label style={{ marginBottom: 0 }}>Prospettiva mensile</Label>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button className="btn" onClick={() => setYm(shiftMonth(ym, -1))} style={{
+            width: 28, height: 28, borderRadius: 999, border: "1px solid " + C.line, background: "transparent",
+            color: C.mut, display: "grid", placeItems: "center", cursor: "pointer",
+          }}><ChevronLeft size={14} /></button>
+          <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 84, textAlign: "center" }}>{monthLabel(ym)}</span>
+          <button className="btn" onClick={() => setYm(shiftMonth(ym, 1))} style={{
+            width: 28, height: 28, borderRadius: 999, border: "1px solid " + C.line, background: "transparent",
+            color: C.mut, display: "grid", placeItems: "center", cursor: "pointer",
+          }}><ChevronRight size={14} /></button>
+        </div>
+      </div>
+      {list.length === 0 ? (
+        <Empty>Nessun lavoro fissato per questo mese. Aggiungine uno da un giorno del calendario.</Empty>
       ) : (
         <>
           <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Guadagno sicuro</div>
-              <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.03em", color: FC.correct }}>{eur(safe)}</div>
+              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Fatturato previsto</div>
+              <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.03em", color: FC.high }}>{eur(previsto)}</div>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Potenziale (stima)</div>
-              <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-0.03em", color: FC.high }}>{eur(pot)}</div>
+              <div style={{ fontSize: 12.5, color: C.mut, marginBottom: 6 }}>Incassato</div>
+              <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: "-0.03em", color: FC.correct }}>{eur(incassato)}</div>
             </div>
           </div>
           <p style={{ fontSize: 12.5, color: C.dim, margin: "10px 0 0", lineHeight: 1.5 }}>
-            {thisMonth.length} lavor{thisMonth.length === 1 ? "o fissato" : "i fissati"} questo mese, dall'Agenda.
+            {list.length} lavor{list.length === 1 ? "o" : "i"} questo mese · {incassatiN} incassat{incassatiN === 1 ? "o" : "i"}.
           </p>
         </>
       )}
