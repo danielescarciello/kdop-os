@@ -5,6 +5,7 @@ import {
   Aperture, Languages, TrendingUp, Clock, AlertTriangle,
   CalendarDays, ArrowRight, Film, Eye, Link2, Target, BookOpen,
   ShieldCheck, Rocket, Crosshair, Gavel, ChevronLeft, ChevronRight, Package, Lock, Medal,
+  Flame, Scissors,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════
@@ -185,6 +186,15 @@ const PILLARS = [
   { id: "nome", name: "Nome", sub: "corpo · prodotti", hue: "#F5A46B", Icon: Sparkles },
 ];
 const P = Object.fromEntries(PILLARS.map((p) => [p.id, p]));
+
+/* ── sfondi cinematografici per pilastro (TaskCard) ────────── */
+const PILLAR_IMG = {
+  lingua: "https://i.postimg.cc/Mnhvv1xn/26C7DAA9-0C0F-45E4-A842-5B6C08A9E17F.png",
+  occhio: "https://i.postimg.cc/VJ3ddX1n/723CC3EA-FF75-4D93-B4F5-5871A3402DA8.png",
+  set:    "https://i.postimg.cc/Mnhvv1xy/9D684721-54A5-4C33-ADC5-4E98173E340B.png",
+  cassa:  "https://i.postimg.cc/cvVrrfZ7/CF1BB5DC-1DE8-40BA-BC1F-5A9CFCE172EB.png",
+  nome:   "https://i.postimg.cc/RWjNNw97/FC5138B2-9F0F-4B54-B8FA-C0F09EB6DF4D.png",
+};
 
 /* ── Ruoli di lavoro ───────────────────────────────────────── */
 const ROLES = [
@@ -1306,14 +1316,6 @@ const Styles = () => (
 
     .pills { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 20px; padding-bottom: 2px; }
 
-    /* ── cruscotto ── */
-    .dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 14px 8px; }
-    @media (max-width: 400px) { .dash { grid-template-columns: repeat(3, 1fr); } }
-    .dashcell {
-      background: none; border: none; cursor: pointer; font-family: inherit; padding: 4px 2px;
-      display: flex; flex-direction: column; align-items: center; gap: 8px;
-    }
-
     /* ── medaglie ── */
     .medalgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
     @keyframes shine {
@@ -1343,6 +1345,97 @@ const Styles = () => (
       transform: translateX(-160%) rotate(8deg); pointer-events: none;
     }
     @media (hover: hover) { .medalcard.on:hover .medalimg-wrap::after { animation: shine .9s ease-in-out; } }
+
+    /* ── Focus: barra sticky filtri + contatori ── */
+    .focusbar {
+      position: sticky; top: calc(env(safe-area-inset-top) + 62px); z-index: 25;
+      background: ${C.bg}E8; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      margin: 0 -16px 4px; padding: 10px 16px 0;
+    }
+    .focusbar-counters { display: flex; gap: 10px; margin-bottom: 12px; }
+    .counter {
+      display: flex; align-items: center; gap: 6px; font-size: 13px; color: ${C.mut};
+      background: ${C.card}; border: 1px solid ${C.line}; padding: 7px 13px; border-radius: 999px;
+    }
+    .counter b { color: ${C.txt}; font-size: 14.5px; font-weight: 700; letter-spacing: -0.02em; }
+
+    /* ── TaskCard cinematografica ── */
+    .taskcard {
+      position: relative; border-radius: 20px; min-height: 108px;
+      background-size: cover; background-position: center; background-repeat: no-repeat;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 16px; overflow: hidden; cursor: pointer; width: 100%; border: none;
+      font-family: inherit; text-align: left;
+      transition: opacity .35s ease, transform .15s ease;
+      box-shadow: 0 4px 18px rgba(0,0,0,.35);
+    }
+    .taskcard:active { transform: scale(.985); }
+    .taskcard.done { opacity: .48; }
+    .taskcard-info { position: relative; z-index: 1; min-width: 0; }
+    .taskcard-pillar {
+      font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+      color: rgba(255,255,255,.6); margin-bottom: 5px;
+    }
+    .taskcard-title { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: -0.02em; line-height: 1.2; }
+    .taskcard-sub { font-size: 12.5px; color: rgba(255,255,255,.65); margin-top: 5px; }
+    .taskcheck {
+      position: relative; z-index: 1; flex-shrink: 0; width: 52px; height: 52px; border-radius: 999px;
+      border: 2px solid rgba(255,255,255,.4); background: rgba(0,0,0,.28);
+      display: grid; place-items: center; color: #fff; cursor: pointer; backdrop-filter: blur(4px);
+      font-family: inherit; font-weight: 700; font-size: 13px;
+      transition: background .2s, border-color .2s, transform .15s;
+    }
+    .taskcheck:active { transform: scale(.88); }
+    .taskcheck.on { background: ${FC.correct}; border-color: ${FC.correct}; color: #0d1410; }
+    .taskcard-subs { display: grid; gap: 6px; padding: 2px 2px 0; }
+    .tasksub-row {
+      display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px;
+      background: ${C.card}; border: 1px solid ${C.line}; width: 100%; text-align: left;
+      font-family: inherit; cursor: pointer;
+    }
+
+    /* ── Cut! bottone chiudi giornata ── */
+    .cutbtn {
+      width: 100%; border: none; border-radius: 20px; padding: 19px;
+      background: linear-gradient(135deg, #202023, #0a0a0b);
+      border: 1px solid ${C.line2}; color: #fff; font-family: inherit; font-weight: 700;
+      font-size: 15.5px; letter-spacing: .03em; display: flex; align-items: center;
+      justify-content: center; gap: 10px; cursor: pointer; position: relative;
+      overflow: hidden; transition: transform .15s;
+    }
+    .cutbtn:active { transform: scale(.98); }
+    .cutbtn::before {
+      content: ""; position: absolute; inset: 0;
+      background: repeating-linear-gradient(45deg, rgba(255,255,255,.035) 0 10px, transparent 10px 20px);
+      pointer-events: none;
+    }
+
+    /* ── Daily Wrap: modal cinematografico ── */
+    .wrapscrim {
+      position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.78);
+      backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center;
+      padding: 20px; animation: fadeIn .22s ease both;
+    }
+    .wrapcard {
+      position: relative; width: min(92vw, 420px); background: linear-gradient(180deg, #18181b, #0c0c0e);
+      border: 1px solid ${C.line2}; border-radius: 28px; padding: 40px 26px 28px; text-align: center;
+      box-shadow: 0 30px 90px rgba(0,0,0,.65); animation: rise .4s cubic-bezier(.2,.8,.25,1) both;
+    }
+    .wrap-close { position: absolute; top: 14px; right: 14px; }
+    .wrap-eyebrow {
+      font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: ${C.dim};
+    }
+    .wrap-medalname { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; color: #C9A24B; margin-top: 6px; }
+    .wrap-medalsub { font-size: 13px; color: ${C.mut}; margin-top: 3px; margin-bottom: 6px; }
+    .wrap-streak {
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      font-size: 52px; font-weight: 800; letter-spacing: -0.045em; margin-top: 10px;
+    }
+    .wrap-streaksub { font-size: 14px; color: ${C.mut}; margin-bottom: 22px; }
+    .wrap-stats { display: flex; gap: 10px; margin-bottom: 24px; }
+    .wrap-stat { flex: 1; background: ${C.card}; border: 1px solid ${C.line}; border-radius: 16px; padding: 14px 10px; }
+    .wrap-num { font-size: 22px; font-weight: 700; letter-spacing: -0.03em; }
+    .wrap-lbl { font-size: 11px; color: ${C.dim}; margin-top: 3px; }
 
     .iconbtn {
       width: 38px; height: 38px; border-radius: 999px; flex-shrink: 0;
@@ -1391,6 +1484,8 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
   const todayTasks = tasks.filter((t) => t.date === tk);
   const [openId, setOpenId] = useState(null);
   const [flying, setFlying] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [showWrap, setShowWrap] = useState(false);
 
   const writeLog = (patch) => persist(Object.assign({}, state, {
     log: Object.assign({}, state.log, { [tk]: Object.assign({}, entry, patch) }),
@@ -1442,6 +1537,18 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
 
   const pinned = (medals || []).find((m) => m.id === state.pinnedMedal && m.unlocked);
 
+  /* filtro a pillole: tocca chi si vede sotto, non cambia i dati */
+  const passFilter = (st) => filter === "all" || (filter === "todo" ? st.status !== "full" : st.status === "full");
+  const visCore = core.filter((x) => passFilter(x.st));
+  const visExtra = extra.filter((x) => passFilter(x.st));
+
+  /* placeholder conto alla rovescia: usa la data di partenza già in Config;
+     puoi sostituirla con una vera scadenza KAFA quando la aggiungi. */
+  const kafaDays = state.profile.targetDate ? daysBetween(tk, state.profile.targetDate) : null;
+
+  /* medaglia da festeggiare nel Daily Wrap: coincide con lo streak di oggi */
+  const hitMedal = (medals || []).find((m) => m.days === consistency.streak);
+
   return (
     <div style={{ display: "grid", gap: 16 }}>
 
@@ -1451,58 +1558,78 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
         </Rise>
       )}
 
-      {/* ── CRUSCOTTO: tutto a colpo d'occhio, niente cassetti ── */}
+      <Rise d={next()}>
+        <div className="focusbar">
+          <div className="focusbar-counters">
+            <span className="counter"><Flame size={15} color={FC.high} /> <b key={consistency.streak} className="pop">{consistency.streak}</b> streak</span>
+            <span className="counter"><Target size={15} color={FC.under} />
+              <b>{kafaDays != null && kafaDays >= 0 ? kafaDays : "—"}</b> al KAFA</span>
+          </div>
+          <Pills value={filter} onChange={setFilter} items={[
+            ["all", "Tutte"], ["todo", "Da fare"], ["done", "Completate"],
+          ]} />
+        </div>
+      </Rise>
+
+      {/* ── STATO DEL GIORNO ── */}
       <Rise d={next()}>
         <Card glow={allDone ? FC.correct : held ? FC.high : null}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 18, gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
-                {allDone ? "Giornata chiusa." : score === 0 ? "Si comincia." : held ? "Giornata salva." : "In movimento."}
-              </div>
-              <div style={{ fontSize: 14, color: C.mut, marginTop: 3 }}>
-                {allDone ? "Tutto verde. Il resto di oggi è tuo."
-                  : held ? "Hai già superato la soglia. Tutto quello che aggiungi è guadagnato."
-                  : "Ti serve " + consistency.soglia + " su " + core.length + " perché il giorno conti. Sei a " + (score % 1 ? score.toFixed(1) : score) + "."}
-              </div>
-            </div>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
+            {allDone ? "Giornata chiusa." : score === 0 ? "Si comincia." : held ? "Giornata salva." : "In movimento."}
           </div>
-
-          <div className="dash">
-            {states.map(({ h, st }) => (
-              <button key={h.id} className="btn dashcell" onClick={() => setOpenId(openId === h.id ? null : h.id)}>
-                <Ring value={Math.round(st.pct * 100)} total={100} size={62} color={st.color}
-                  label={st.status === "full" ? "✓" : st.tot > 1 ? st.done + "/" + st.tot : ""} />
-                <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.25, textAlign: "center",
-                  color: st.status === "none" ? C.dim : C.txt }}>{h.label}</span>
-                {!h.core && <span style={{ fontSize: 9.5, color: C.dim }}>secondaria</span>}
-              </button>
-            ))}
+          <div style={{ fontSize: 14, color: C.mut, marginTop: 3 }}>
+            {allDone ? "Tutto verde. Il resto di oggi è tuo."
+              : held ? "Hai già superato la soglia. Tutto quello che aggiungi è guadagnato."
+              : "Ti serve " + consistency.soglia + " su " + core.length + " perché il giorno conti. Sei a " + (score % 1 ? score.toFixed(1) : score) + "."}
           </div>
         </Card>
       </Rise>
 
-      {/* ── ABITUDINI A NIDO ── */}
+      {/* ── TASK CARDS: non negoziabili ── */}
       <Rise d={next()}>
-        <Card>
+        <div style={{ display: "grid", gap: 12 }}>
           <Label>Non negoziabili</Label>
           {core.length === 0 && <Empty>Nessuna macro-categoria. Creale dall'ingranaggio in alto.</Empty>}
-          {core.map(({ h, st }) => (
-            <MacroRow key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
+          {core.length > 0 && visCore.length === 0 && (
+            <Empty>{filter === "done" ? "Ancora nessuna chiusa oggi." : "Le hai già chiuse tutte. 🎬"}</Empty>
+          )}
+          {visCore.map(({ h, st }) => (
+            <TaskCard key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
               onOpen={() => setOpenId(openId === h.id ? null : h.id)}
               onMacro={() => toggleMacro(h)} onSub={(sb) => toggleSub(h, sb)} />
           ))}
-          {extra.length > 0 && (
-            <>
-              <Label style={{ marginTop: 22 }}>Secondarie</Label>
-              {extra.map(({ h, st }) => (
-                <MacroRow key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
-                  onOpen={() => setOpenId(openId === h.id ? null : h.id)}
-                  onMacro={() => toggleMacro(h)} onSub={(sb) => toggleSub(h, sb)} />
-              ))}
-            </>
-          )}
-        </Card>
+        </div>
       </Rise>
+
+      {extra.length > 0 && (
+        <Rise d={next()}>
+          <div style={{ display: "grid", gap: 12 }}>
+            <Label>Secondarie</Label>
+            {visExtra.length === 0 && (
+              <Empty>{filter === "done" ? "Ancora nessuna chiusa oggi." : "Le hai già chiuse tutte."}</Empty>
+            )}
+            {visExtra.map(({ h, st }) => (
+              <TaskCard key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
+                onOpen={() => setOpenId(openId === h.id ? null : h.id)}
+                onMacro={() => toggleMacro(h)} onSub={(sb) => toggleSub(h, sb)} />
+            ))}
+          </div>
+        </Rise>
+      )}
+
+      {/* ── CHIUDI GIORNATA ── */}
+      <Rise d={next()}>
+        <button className="cutbtn" onClick={() => setShowWrap(true)}>
+          <Scissors size={18} />
+          CHIUDI GIORNATA · CUT!
+        </button>
+      </Rise>
+
+      {showWrap && (
+        <DailyWrap onClose={() => setShowWrap(false)} streak={consistency.streak}
+          fulls={fulls} coreTot={core.length} doneTasks={doneTasks} todayTasksLen={todayTasks.length}
+          medal={hitMedal} />
+      )}
 
       {/* ── TASK VOLANTI ── */}
       <Rise d={next()}>
@@ -1573,49 +1700,109 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
   );
 }
 
-/* Riga a nido: la macro sopra, i sub dentro una tendina */
-function MacroRow({ h, st, entry, open, onOpen, onMacro, onSub }) {
-  const subs = h.subs || [];
-  const label = st.status === "full" ? "fatto" : st.status === "part" ? st.done + " su " + st.tot : subs.length ? subs.length + " passi" : "";
+/* ── TaskCard cinematografica: sfondo = pilastro, check grande ── */
+function TaskCard({ h, st, entry, open, onOpen, onMacro, onSub }) {
+  const pillar = P[h.pillar];
+  const img = PILLAR_IMG[h.pillar];
+  const done = st.status === "full";
+  const hasSubs = (h.subs || []).length > 0;
   return (
-    <div style={{ borderTop: "1px solid " + C.line }}>
-      <div className="row" style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 8px" }}>
-        <button className="btn" onClick={onMacro} style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
-          <Radio done={st.status === "full"} color={st.color} size={26} />
-        </button>
-        <button onClick={subs.length ? onOpen : onMacro} style={{
-          flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, cursor: "pointer",
-          textAlign: "left", fontFamily: "inherit",
-        }}>
-          <div style={{ fontSize: 16.5, fontWeight: 500, color: st.status === "full" ? C.dim : C.txt,
-            textDecoration: st.status === "full" ? "line-through" : "none" }}>{h.label}</div>
-          {label && <div style={{ fontSize: 12.5, color: st.status === "part" ? FC.high : C.dim, marginTop: 2 }}>{label}</div>}
-        </button>
-        {subs.length > 0 && (
-          <button className="btn" onClick={onOpen} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: C.dim }}>
-            <ChevronDown size={17} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .25s" }} />
-          </button>
-        )}
-      </div>
-
-      {open && subs.length > 0 && (
-        <div className="rise" style={{ paddingLeft: 22, paddingBottom: 8, marginLeft: 16,
-          borderLeft: "2px solid " + st.color + "44" }}>
-          {subs.map((sb) => {
-            const on = !!entry[h.id + "." + sb.id];
+    <div style={{ display: "grid", gap: hasSubs && open ? 8 : 0 }}>
+      <button
+        className={"taskcard" + (done ? " done" : "")}
+        onClick={() => (hasSubs ? onOpen() : onMacro())}
+        style={{
+          backgroundImage: `linear-gradient(to right, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.3) 100%), url(${img})`,
+        }}
+      >
+        <div className="taskcard-info">
+          <div className="taskcard-pillar">{pillar ? pillar.name : ""}{!h.core ? " · secondaria" : ""}</div>
+          <div className="taskcard-title">{h.label}</div>
+          {hasSubs && <div className="taskcard-sub">{st.done}/{st.tot} completate{hasSubs ? (open ? " · tocca per chiudere" : " · tocca per aprire") : ""}</div>}
+        </div>
+        <div
+          role="button" tabIndex={0} aria-label={done ? "Segna come da fare" : "Segna come fatta"}
+          className={"taskcheck" + (done ? " on" : "")}
+          onClick={(e) => { e.stopPropagation(); onMacro(); }}
+        >
+          {done ? <Check size={24} /> : hasSubs ? (st.done + "/" + st.tot) : ""}
+        </div>
+      </button>
+      {hasSubs && open && (
+        <div className="taskcard-subs">
+          {h.subs.map((sb) => {
+            const subDone = !!entry[h.id + "." + sb.id];
             return (
-              <button key={sb.id} className="row" onClick={() => onSub(sb)} style={{
-                display: "flex", alignItems: "center", gap: 12, width: "100%", background: "transparent",
-                border: "none", padding: "10px 8px", cursor: "pointer", textAlign: "left", fontFamily: "inherit",
-              }}>
-                <Radio done={on} color={st.color} size={20} />
-                <span style={{ flex: 1, fontSize: 15, color: on ? C.dim : C.txt,
-                  textDecoration: on ? "line-through" : "none" }}>{sb.label}</span>
+              <button key={sb.id} className="tasksub-row btn" onClick={() => onSub(sb)}>
+                <Radio done={subDone} color={pillar ? pillar.hue : FC.low} size={20} />
+                <span style={{ color: subDone ? C.dim : C.txt, textDecoration: subDone ? "line-through" : "none" }}>
+                  {sb.label}
+                </span>
               </button>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Daily Wrap: modal cinematografico di fine giornata ── */
+function DailyWrap({ onClose, streak, fulls, coreTot, doneTasks, todayTasksLen, medal }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const esc = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", esc); };
+  }, []);
+  return (
+    <div className="wrapscrim" onClick={onClose}>
+      <div className="wrapcard" onClick={(e) => e.stopPropagation()}>
+        <button className="btn iconbtn wrap-close" onClick={onClose} aria-label="Chiudi"><X size={17} /></button>
+
+        {medal ? (
+          <>
+            <div className="wrap-eyebrow">Nuovo traguardo</div>
+            <div className="unlockPop" style={{ margin: "16px auto 4px" }}>
+              {medal.img ? (
+                <img src={medal.img} alt={medal.name} className="floaty" style={{
+                  width: 168, height: 168, objectFit: "contain",
+                  filter: "drop-shadow(0 12px 30px rgba(201,162,75,.5))",
+                }} />
+              ) : (
+                <div style={{ width: 140, height: 140, margin: "0 auto", borderRadius: 999,
+                  background: "#C9A24B22", display: "grid", placeItems: "center", color: "#C9A24B" }}>
+                  <Medal size={56} />
+                </div>
+              )}
+            </div>
+            <div className="wrap-medalname">{medal.name}</div>
+            <div className="wrap-medalsub">{medal.days} giorni di fila · {medal.sub}</div>
+          </>
+        ) : (
+          <div className="wrap-eyebrow" style={{ marginBottom: 6 }}>Giornata chiusa · Cut!</div>
+        )}
+
+        <div className="wrap-streak">
+          <Flame size={38} color="#F3C15E" />
+          <span key={streak} className="pop">{streak}</span>
+        </div>
+        <div className="wrap-streaksub">giorn{streak === 1 ? "o" : "i"} di fila</div>
+
+        <div className="wrap-stats">
+          <div className="wrap-stat">
+            <div className="wrap-num">{fulls}/{coreTot}</div>
+            <div className="wrap-lbl">non negoziabili</div>
+          </div>
+          <div className="wrap-stat">
+            <div className="wrap-num">{doneTasks}/{todayTasksLen}</div>
+            <div className="wrap-lbl">cose fatte</div>
+          </div>
+        </div>
+
+        <Btn kind="solid" full onClick={onClose} style={{ padding: 15 }}>Continua</Btn>
+      </div>
     </div>
   );
 }
