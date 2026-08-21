@@ -4,7 +4,7 @@ import {
   Camera, Zap, Sparkles, Plane, GraduationCap, Briefcase,
   Aperture, Languages, TrendingUp, Clock, AlertTriangle,
   CalendarDays, ArrowRight, Film, Eye, Link2, Target, BookOpen,
-  ShieldCheck, Rocket, Crosshair, Gavel, ChevronLeft, ChevronRight, Package,
+  ShieldCheck, Rocket, Crosshair, Gavel, ChevronLeft, ChevronRight, Package, Lock, Medal,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════
@@ -12,7 +12,70 @@ import {
    Italia → KAFA (6 posti) → DoP in Corea
    ═══════════════════════════════════════════════════════════ */
 
-const STORE_KEY = "hanbit:state:v5";
+/* ── Persistenza e migrazioni ─────────────────────────────────
+   La chiave non cambia MAI più. La versione dello schema vive
+   dentro i dati, e al caricamento una catena di migrazioni
+   converte il vecchio nel nuovo. Così posso cambiare la
+   struttura dell'app senza farti perdere niente.              */
+const STORE_KEY = "kdop:state";
+const SCHEMA = 6;
+
+/* Chiavi delle versioni precedenti, dalla più recente in giù.
+   Vengono lette una volta sola e mai cancellate: restano lì
+   come rete di sicurezza. */
+const LEGACY_KEYS = [
+  "hanbit:state:v6", "hanbit:state:v5", "hanbit:state:v4",
+  "hanbit:state:v3", "hanbit:state:v2", "hanbit:state:v1",
+];
+
+function migrate(input) {
+  const d = Object.assign({}, DEFAULT_STATE, input);
+  d.profile = Object.assign({}, DEFAULT_STATE.profile, input.profile);
+  const from = Number(input.v || 0);
+
+  /* → 6: le abitudini piatte diventano macro senza passi.
+     I log restano validi: una macro senza subs legge la
+     propria chiave esattamente come prima. */
+  if (from < 6) {
+    d.habits = (input.habits || DEFAULT_STATE.habits).map((h) =>
+      Array.isArray(h.subs) ? h : Object.assign({}, h, { subs: [] }));
+  }
+
+  /* Campi comparsi lungo la strada: se mancano, si riempiono
+     col vuoto invece di far esplodere i componenti. */
+  ["expenses", "jobs", "goals", "ideas", "tasks", "portfolio",
+   "watch", "clinic", "topikLogs", "wishlist"].forEach((k) => {
+    if (!Array.isArray(d[k])) d[k] = [];
+  });
+  ["log", "plan", "topikRoadmap"].forEach((k) => {
+    if (!d[k] || typeof d[k] !== "object") d[k] = {};
+  });
+  if (!d.weekFocus || typeof d.weekFocus !== "object") d.weekFocus = { week: "", tasks: [] };
+  if (!Array.isArray(d.medalSeen)) d.medalSeen = [];
+  if (d.pinnedMedal === undefined) d.pinnedMedal = null;
+
+  d.v = SCHEMA;
+  return d;
+}
+
+/* Cerca i dati nella chiave nuova; se non ci sono, recupera la
+   versione più recente fra quelle vecchie e la converte. */
+async function loadState() {
+  const cur = await store.get(STORE_KEY);
+  if (cur) {
+    try { return { data: migrate(JSON.parse(cur)), recovered: null }; } catch (e) {}
+  }
+  for (const k of LEGACY_KEYS) {
+    const raw = await store.get(k);
+    if (!raw) continue;
+    try {
+      const data = migrate(JSON.parse(raw));
+      await store.set(STORE_KEY, JSON.stringify(data));
+      return { data, recovered: k };
+    } catch (e) {}
+  }
+  return { data: null, recovered: null };
+}
 
 /* ── ENDPOINT AI ─────────────────────────────────────────────
    In produzione su Netlify le chiamate passano da /api/anthropic,
@@ -40,26 +103,67 @@ function aiHeaders() {
 
 /* ── Storage: localStorage nel browser, window.storage dentro
    Claude. Nessuna modifica quando esporti.                     */
-const store = {
-  async get(k) {
-    if (typeof window !== "undefined" && window.storage && window.storage.get) {
-      try { const r = await window.storage.get(k); return r && r.value ? r.value : null; } catch (e) { return null; }
-    }
-    try { return window.localStorage.getItem(k); } catch (e) { return null; }
-  },
-  async set(k, v) {
-    if (typeof window !== "undefined" && window.storage && window.storage.set) {
-      try { await window.storage.set(k, v); return true; } catch (e) { return false; }
-    }
-    try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; }
-  },
-  async del(k) {
-    if (typeof window !== "undefined" && window.storage && window.storage.delete) {
-      try { await window.storage.delete(k); return true; } catch (e) { return false; }
-    }
-    try { window.localStorage.removeItem(k); return true; } catch (e) { return false; }
-  },
+/* ── Sincronizzazione: Supabase + cache locale ────────────────
+   localStorage resta come cache immediata, così l'app apre
+   istantanea e continua a funzionare offline. Supabase è la
+   fonte di verità: al login tira giù lo stato del cloud, e ogni
+   salvataggio fa il push. Se la rete manca, si scrive comunque
+   in locale e si sincronizza appena torna.
+   Le chiavi stanno in variabili d'ambiente Vite (VITE_...).    */
+const SB_URL = import.meta.env.VITE_SUPABASE_URL || "";
+const SB_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+const CLOUD_ON = !!(SB_URL && SB_ANON);
+
+let sb = null;
+async function getSb() {
+  if (!CLOUD_ON) return null;
+  if (sb) return sb;
+  const { createClient } = await import("@supabase/supabase-js");
+  sb = createClient(SB_URL, SB_ANON);
+  return sb;
+}
+
+const local = {
+  get(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; } },
+  del(k) { try { window.localStorage.removeItem(k); return true; } catch (e) { return false; } },
 };
+
+/* store locale, invariato: usato per cache e migrazioni legacy */
+const store = {
+  async get(k) { return local.get(k); },
+  async set(k, v) { return local.set(k, v); },
+  async del(k) { return local.del(k); },
+};
+
+/* ── Cloud: legge e scrive la riga dello stato dell'utente ──── */
+async function cloudLoad(userId) {
+  const client = await getSb();
+  if (!client) return null;
+  const { data, error } = await client
+    .from("app_state").select("data").eq("user_id", userId).maybeSingle();
+  if (error || !data) return null;
+  return data.data || null;
+}
+
+async function cloudSave(userId, stateObj) {
+  const client = await getSb();
+  if (!client) return false;
+  const { error } = await client
+    .from("app_state")
+    .upsert({ user_id: userId, data: stateObj, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" });
+  return !error;
+}
+
+/* Sessione: ritorna l'utente loggato o null */
+async function cloudUser() {
+  const client = await getSb();
+  if (!client) return null;
+  const { data } = await client.auth.getUser();
+  return data && data.user ? data.user : null;
+}
+
 
 /* ── Tokens ────────────────────────────────────────────────── */
 const C = {
@@ -144,15 +248,55 @@ const DEFAULT_CATEGORIES = [
 ];
 
 const DEFAULT_HABITS = [
-  { id: "h1", label: "Blocco lungo di coreano — 90 min", pillar: "lingua", core: true },
-  { id: "h2", label: "Secondo blocco — 30 min (ascolto o scrittura)", pillar: "lingua", core: true },
-  { id: "h8", label: "Anki: richiamo attivo, non riconoscimento", pillar: "lingua", core: true },
-  { id: "h3", label: "Smontare una sequenza nel Diario", pillar: "occhio", core: true },
-  { id: "h4", label: "Allenamento", pillar: "nome", core: true },
-  { id: "h5", label: "Registro spese e lavori", pillar: "cassa", core: true },
-  { id: "h6", label: "Un messaggio a qualcuno del settore", pillar: "set", core: false },
-  { id: "h7", label: "30 min sull'app del gaffer", pillar: "nome", core: false },
+  { id: "m_kor", label: "Coreano", pillar: "lingua", core: true, subs: [
+    { id: "s1", label: "Blocco profondo 90 min" },
+    { id: "s2", label: "Anki — richiamo attivo" },
+    { id: "s3", label: "Ascolto senza sottotitoli" },
+    { id: "s4", label: "Scrittura o conversazione" },
+  ]},
+  { id: "m_kafa", label: "Portfolio KAFA", pillar: "occhio", core: true, subs: [
+    { id: "s1", label: "Smontare una sequenza nel Diario" },
+    { id: "s2", label: "Lavorare su un pezzo del portfolio" },
+    { id: "s3", label: "Scrivere a una produzione" },
+  ]},
+  { id: "m_corpo", label: "Corpo", pillar: "nome", core: true, subs: [
+    { id: "s1", label: "Allenamento" },
+    { id: "s2", label: "Sonno prima dell'una" },
+  ]},
+  { id: "m_cassa", label: "Cassa", pillar: "cassa", core: true, subs: [
+    { id: "s1", label: "Registrare spese e lavori" },
+  ]},
+  { id: "m_nome", label: "Nome", pillar: "nome", core: false, subs: [
+    { id: "s1", label: "App del gaffer" },
+    { id: "s2", label: "Un post o un contatto" },
+  ]},
 ];
+
+/* ── Stato di una macro-abitudine in un dato giorno ───────────
+   Verde: chiusa. Arancione: parziale — che è comunque un
+   giorno in cui hai fatto qualcosa, e va contato come tale.   */
+function habitState(h, entry) {
+  const subs = h.subs || [];
+  if (!subs.length) {
+    const done = !!entry[h.id];
+    return { status: done ? "full" : "none", done: done ? 1 : 0, tot: 1,
+      pct: done ? 1 : 0, color: done ? FC.correct : C.dim };
+  }
+  const n = subs.filter((sb) => entry[h.id + "." + sb.id]).length;
+  const full = !!entry[h.id] || n === subs.length;
+  const status = full ? "full" : n > 0 ? "part" : "none";
+  return { status, done: full ? subs.length : n, tot: subs.length,
+    pct: full ? 1 : n / subs.length,
+    color: full ? FC.correct : n > 0 ? FC.high : C.dim };
+}
+
+/* Peso di una giornata: una macro chiusa vale 1, una parziale
+   mezza. Serve a consistenza ed esposizione. */
+const habitWeight = (h, entry) => {
+  const st = habitState(h, entry);
+  return st.status === "full" ? 1 : st.status === "part" ? 0.5 : 0;
+};
+
 
 /* ── Il Piano: 5 fasi ──────────────────────────────────────── */
 const PHASES = [
@@ -348,7 +492,7 @@ function computeExposure(state) {
   state.habits.forEach((h) => { if (per[h.pillar]) per[h.pillar].possible += 14; });
   days.forEach((d) => {
     const e = state.log[d] || {};
-    state.habits.forEach((h) => { if (e[h.id] && per[h.pillar]) per[h.pillar].done += 1; });
+    state.habits.forEach((h) => { if (per[h.pillar]) per[h.pillar].done += habitWeight(h, e); });
   });
   const total = Object.values(per).reduce((s, v) => s + v.done, 0);
   const active = PILLARS.filter((p) => per[p.id].possible > 0);
@@ -580,17 +724,62 @@ function computeKafa(state) {
 }
 
 function computeConsistency(state) {
-
   const core = state.habits.filter((h) => h.core);
   if (!core.length) return { pct: 0, held: 0, soglia: 0, tot: 0, grid: [] };
   const soglia = Math.ceil(core.length / 2);
   const grid = lastNDays(30).reverse().map((d) => {
     const l = state.log[d] || {};
-    const n = core.filter((h) => l[h.id]).length;
-    return { date: d, n, full: n >= core.length, held: n >= soglia };
+    const score = core.reduce((s, h) => s + habitWeight(h, l), 0);
+    const fulls = core.filter((h) => habitState(h, l).status === "full").length;
+    return { date: d, n: score, full: fulls === core.length, held: score >= soglia,
+      touched: score > 0 };
   });
+  /* Streak calcolato su tutta la storia dei log, non solo 30 giorni.
+     Corrente: giorni tenuti di fila fino a oggi (o a ieri, così
+     la giornata in corso non spezza la serie prima di sera).
+     Record: la serie più lunga mai raggiunta. La medaglia guarda
+     il record, non il corrente: una volta conquistata non si perde. */
+  const held = (dk) => {
+    const l = state.log[dk] || {};
+    return core.reduce((s, h) => s + habitWeight(h, l), 0) >= soglia;
+  };
+  let current = 0;
+  for (let i = 0; i < 400; i++) {
+    const dk = addDays(-i);
+    if (held(dk)) current++;
+    else if (i === 0) continue; /* oggi non ancora chiuso: non rompe */
+    else break;
+  }
+  const keys = Object.keys(state.log || {}).sort();
+  let record = 0, run = 0, prev = null;
+  keys.forEach((dk) => {
+    if (!held(dk)) { run = 0; prev = dk; return; }
+    run = (prev && daysBetween(prev, dk) === 1) ? run + 1 : 1;
+    if (run > record) record = run;
+    prev = dk;
+  });
+  record = Math.max(record, current);
+
   return { pct: Math.round((grid.filter((g) => g.held).length / 30) * 100),
-    held: grid.filter((g) => g.held).length, soglia, tot: core.length, grid };
+    held: grid.filter((g) => g.held).length, soglia, tot: core.length, grid,
+    streak: current, best: record };
+}
+
+/* ── Medaglie ─────────────────────────────────────────────────
+   Le soglie sono giorni di miglior streak. Sbloccata = raggiunta
+   almeno una volta, e resta tua per sempre: nessuna medaglia si
+   rispegne se salti un giorno. È un museo, non una fiche.       */
+const MEDALS = [
+  { id: "d1",   days: 1,   name: "Il primo colpo",      sub: "Un giorno tenuto",       img: "/medals/1.jpg" },
+  { id: "d5",   days: 5,   name: "Cinque di fila",       sub: "La settimana regge",     img: "/medals/5.jpg" },
+  { id: "d10",  days: 10,  name: "Doppia cifra",         sub: "Non è più un caso",      img: "/medals/10.jpg" },
+  { id: "d20",  days: 20,  name: "Il guardiano",         sub: "Venti giorni",           img: "/medals/15.jpg" },
+  { id: "d50",  days: 50,  name: "Cinquanta",            sub: "Metà strada al mito",    img: null },
+  { id: "d100", days: 100, name: "Leggenda",             sub: "Cento giorni",           img: null },
+];
+
+function computeMedals(best) {
+  return MEDALS.map((m) => Object.assign({}, m, { unlocked: best >= m.days }));
 }
 
 /* ── atomi ─────────────────────────────────────────────────── */
@@ -703,27 +892,68 @@ export default function App() {
   const timer = useRef(null);
   const scroller = useRef(null);
 
+  const [recovered, setRecovered] = useState(null);
+  const [user, setUser] = useState(null);
+  const [sync, setSync] = useState(CLOUD_ON ? "loading" : "off"); // off | loading | synced | offline
+  const cloudTimer = useRef(null);
+
+  /* Avvio: prima la cache locale (istantanea), poi il cloud se
+     c'è una sessione. Il cloud, se presente, sovrascrive. */
   useEffect(() => {
     (async () => {
-      const raw = await store.get(STORE_KEY);
-      if (raw) {
-        try {
-          const p = JSON.parse(raw);
-          setState(Object.assign({}, DEFAULT_STATE, p, { profile: Object.assign({}, DEFAULT_STATE.profile, p.profile) }));
-        } catch (e) {}
+      const { data, recovered } = await loadState();
+      if (data) setState(data);
+      if (recovered) setRecovered(recovered);
+
+      if (CLOUD_ON) {
+        const u = await cloudUser();
+        setUser(u);
+        if (u) {
+          try {
+            const remote = await cloudLoad(u.id);
+            if (remote) { setState(migrate(remote)); }
+            setSync("synced");
+          } catch (e) { setSync("offline"); }
+        }
       }
       setReady(true);
     })();
   }, []);
 
-  /* ogni cambio sezione riporta in cima: su mobile ereditare
-     lo scroll della sezione precedente disorienta sempre */
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [sec]);
 
   const persist = (next) => {
-    setState(next);
+    const stamped = Object.assign({}, next, { v: SCHEMA });
+    setState(stamped);
+    /* cache locale immediata */
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => store.set(STORE_KEY, JSON.stringify(next)), 400);
+    timer.current = setTimeout(() => store.set(STORE_KEY, JSON.stringify(stamped)), 400);
+    /* push sul cloud, debounce più lungo per non martellare l'API */
+    if (CLOUD_ON && user) {
+      setSync("loading");
+      clearTimeout(cloudTimer.current);
+      cloudTimer.current = setTimeout(async () => {
+        const ok = await cloudSave(user.id, stamped);
+        setSync(ok ? "synced" : "offline");
+      }, 1200);
+    }
+  };
+
+  const onAuth = async (u) => {
+    setUser(u);
+    setSync("loading");
+    try {
+      const remote = await cloudLoad(u.id);
+      if (remote) setState(migrate(remote));   // il cloud ha già dati: vincono loro
+      else await cloudSave(u.id, state);        // primo login: carico lo stato locale
+      setSync("synced");
+    } catch (e) { setSync("offline"); }
+  };
+
+  const onLogout = async () => {
+    const client = await getSb();
+    if (client) await client.auth.signOut();
+    setUser(null); setSync("off");
   };
 
   const inc = useMemo(() => computeIncome(state), [state]);
@@ -732,6 +962,7 @@ export default function App() {
   const career = useMemo(() => computeCareer(state, money), [state, money]);
   const kafa = useMemo(() => computeKafa(state), [state]);
   const consistency = useMemo(() => computeConsistency(state), [state]);
+  const medals = useMemo(() => computeMedals(consistency.best), [consistency.best]);
 
   if (!ready) return (
     <div style={Object.assign({}, shell, { display: "grid", placeItems: "center", minHeight: "60vh" })}>
@@ -740,13 +971,33 @@ export default function App() {
   );
   if (!state.profile.onboarded) return <Onboarding state={state} persist={persist} />;
 
-  const shared = { state, persist, exposure, money, career, kafa, inc, consistency };
+  const shared = { state, persist, exposure, money, career, kafa, inc, consistency, medals };
 
   return (
     <div style={shell} ref={scroller}>
       <Styles />
       <TopBar state={state} kafa={kafa} money={money}
-        onSettings={() => setSettings(true)} sec={sec} />
+        onSettings={() => setSettings(true)} sec={sec} sync={sync} />
+
+      {recovered && (
+        <div className="rise" style={{ marginBottom: 14, padding: "13px 16px", borderRadius: 18,
+          background: FC.correct + "14", border: "1px solid " + FC.correct + "33",
+          display: "flex", alignItems: "flex-start", gap: 11 }}>
+          <Check size={16} color={FC.correct} style={{ marginTop: 2, flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14.5, lineHeight: 1.55, color: C.txt }}>
+              Ho recuperato i tuoi dati dalla versione precedente e li ho convertiti.
+            </div>
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 3 }}>
+              Il vecchio salvataggio resta intatto in {recovered}.
+            </div>
+          </div>
+          <button className="btn" onClick={() => setRecovered(null)} style={{
+            background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
+            <X size={15} />
+          </button>
+        </div>
+      )}
 
       <main key={sec} className="rise">
         {sec === "focus" && <Focus {...shared} />}
@@ -763,6 +1014,7 @@ export default function App() {
 
       {quick && <QuickIdea state={state} persist={persist} onClose={() => setQuick(false)} />}
       {settings && <Sheet title="Impostazioni" onClose={() => setSettings(false)}>
+        <Account user={user} sync={sync} onAuth={onAuth} onLogout={onLogout} />
         <Config state={state} persist={persist} inc={inc} />
       </Sheet>}
 
@@ -786,7 +1038,7 @@ export default function App() {
 }
 
 /* ── Barra superiore: una riga sola, sempre uguale ─────────── */
-function TopBar({ state, kafa, money, onSettings, sec }) {
+function TopBar({ state, kafa, money, onSettings, sec, sync }) {
   const dd = state.profile.targetDate ? daysBetween(todayKey(), state.profile.targetDate) : null;
   const topikLeft = state.profile.topikDate ? daysBetween(todayKey(), state.profile.topikDate) : null;
   const titles = { focus: "Focus", accademia: "Accademia", logistica: "Logistica", oracolo: "Oracolo" };
@@ -806,9 +1058,17 @@ function TopBar({ state, kafa, money, onSettings, sec }) {
           <div style={{ fontSize: 12.5, color: C.dim, marginTop: 2, whiteSpace: "nowrap",
             overflow: "hidden", textOverflow: "ellipsis" }}>{subs[sec]}</div>
         </div>
-        <button className="btn iconbtn" onClick={onSettings} aria-label="Impostazioni">
-          <Settings size={18} />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {sync && sync !== "off" && (
+            <span title={sync === "synced" ? "Sincronizzato" : sync === "loading" ? "Sto salvando…" : "Offline"}
+              className={sync === "loading" ? "breathe" : ""}
+              style={{ width: 8, height: 8, borderRadius: 999, flexShrink: 0,
+                background: sync === "synced" ? FC.correct : sync === "offline" ? FC.clip : FC.high }} />
+          )}
+          <button className="btn iconbtn" onClick={onSettings} aria-label="Impostazioni">
+            <Settings size={18} />
+          </button>
+        </div>
       </div>
     </header>
   );
@@ -835,23 +1095,25 @@ function Pills({ items, value, onChange }) {
 }
 
 /* ── FOCUS ─────────────────────────────────────────────────── */
-function Focus({ state, persist, exposure, consistency }) {
-  return <Oggi state={state} persist={persist} exposure={exposure} consistency={consistency} />;
+function Focus({ state, persist, exposure, consistency, medals }) {
+  return <Oggi state={state} persist={persist} exposure={exposure} consistency={consistency} medals={medals} />;
 }
 
 /* ── ACCADEMIA: coreano + studio KAFA ──────────────────────── */
-function Accademia({ state, persist, kafa }) {
+function Accademia({ state, persist, kafa, consistency, medals }) {
   const [v, setV] = useState("coreano");
   return (
     <>
       <Pills value={v} onChange={setV} items={[
-        ["coreano", "Coreano"], ["mirino", "Mirino"], ["portfolio", "Portfolio"], ["diario", "Diario"],
+        ["coreano", "Coreano"], ["mirino", "Mirino"], ["portfolio", "Portfolio"],
+        ["diario", "Diario"], ["trofei", "Trofei"],
       ]} />
       <div key={v} className="rise" style={{ display: "grid", gap: 16 }}>
         {v === "coreano" && <Topik state={state} persist={persist} />}
         {v === "mirino" && <Mirino kafa={kafa} />}
         {v === "portfolio" && <Portfolio state={state} persist={persist} kafa={kafa} />}
         {v === "diario" && <Diario state={state} persist={persist} kafa={kafa} />}
+        {v === "trofei" && <Trofei state={state} persist={persist} consistency={consistency} medals={medals} />}
       </div>
     </>
   );
@@ -1032,6 +1294,27 @@ const Styles = () => (
 
     .pills { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 20px; padding-bottom: 2px; }
 
+    /* ── cruscotto ── */
+    .dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 14px 8px; }
+    @media (max-width: 400px) { .dash { grid-template-columns: repeat(3, 1fr); } }
+    .dashcell {
+      background: none; border: none; cursor: pointer; font-family: inherit; padding: 4px 2px;
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+    }
+
+    /* ── medaglie ── */
+    .medalgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    @keyframes shine {
+      0% { transform: translateX(-120%) rotate(8deg); }
+      100% { transform: translateX(220%) rotate(8deg); }
+    }
+    .medal-shine { position: relative; overflow: hidden; border-radius: 999px; }
+    .medal-shine::after {
+      content: ""; position: absolute; top: -20%; left: 0; width: 40%; height: 140%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.28), transparent);
+      animation: shine 4.5s ease-in-out infinite; animation-delay: 1s;
+    }
+
     .iconbtn {
       width: 38px; height: 38px; border-radius: 999px; flex-shrink: 0;
       border: 1px solid ${C.line}; background: transparent; color: ${C.mut};
@@ -1071,85 +1354,167 @@ const Styles = () => (
 /* ═══════════════════════════════════════════════════════════
    OGGI — abitudini + task del giorno + calendario
    ═══════════════════════════════════════════════════════════ */
-function Oggi({ state, persist, exposure, consistency }) {
+function Oggi({ state, persist, exposure, consistency, medals }) {
   const tk = todayKey();
   const entry = state.log[tk] || {};
-  const toggle = (id) => persist(Object.assign({}, state, {
-    log: Object.assign({}, state.log, { [tk]: Object.assign({}, entry, { [id]: !entry[id] }) }),
-  }));
-  const core = state.habits.filter((h) => h.core);
-  const extra = state.habits.filter((h) => !h.core);
+  const habits = state.habits || [];
   const tasks = state.tasks || [];
   const todayTasks = tasks.filter((t) => t.date === tk);
-  const doneCore = core.filter((h) => entry[h.id]).length;
+  const [openId, setOpenId] = useState(null);
+  const [flying, setFlying] = useState("");
+
+  const writeLog = (patch) => persist(Object.assign({}, state, {
+    log: Object.assign({}, state.log, { [tk]: Object.assign({}, entry, patch) }),
+  }));
+
+  /* Toccare la macro chiude o riapre tutto insieme */
+  const toggleMacro = (h) => {
+    const st = habitState(h, entry);
+    const on = st.status !== "full";
+    const patch = { [h.id]: on };
+    (h.subs || []).forEach((sb) => { patch[h.id + "." + sb.id] = on; });
+    writeLog(patch);
+  };
+
+  /* Toccare un sub: se li chiudi tutti, la macro diventa verde da sola */
+  const toggleSub = (h, sb) => {
+    const key = h.id + "." + sb.id;
+    const next = Object.assign({}, entry, { [key]: !entry[key] });
+    const n = (h.subs || []).filter((x) => next[h.id + "." + x.id]).length;
+    next[h.id] = n === (h.subs || []).length && n > 0;
+    persist(Object.assign({}, state, { log: Object.assign({}, state.log, { [tk]: next }) }));
+  };
+
+  const states = habits.map((h) => ({ h, st: habitState(h, entry) }));
+  const core = states.filter((x) => x.h.core);
+  const extra = states.filter((x) => !x.h.core);
+  const fulls = core.filter((x) => x.st.status === "full").length;
+  const parts = core.filter((x) => x.st.status === "part").length;
+  const score = core.reduce((s, x) => s + (x.st.status === "full" ? 1 : x.st.status === "part" ? 0.5 : 0), 0);
+  const allDone = core.length > 0 && fulls === core.length;
+  const held = score >= consistency.soglia;
   const doneTasks = todayTasks.filter((t) => t.done).length;
-  const totalToday = core.length + todayTasks.length;
-  const doneToday = doneCore + doneTasks;
-  const allDone = totalToday > 0 && doneToday === totalToday;
   const darkest = exposure.filter((e) => e.possible > 0).sort((a, b) => a.ratio - b.ratio)[0];
 
   const setTasks = (list) => persist(Object.assign({}, state, { tasks: list }));
   const toggleTask = (id) => setTasks(tasks.map((t) => (t.id === id ? Object.assign({}, t, { done: !t.done }) : t)));
   const editTask = (id, text) => setTasks(tasks.map((t) => (t.id === id ? Object.assign({}, t, { text }) : t)));
   const rmTask = (id) => setTasks(tasks.filter((t) => t.id !== id));
-  const addTask = (date, text, pillar) => setTasks([{ id: "t" + Date.now() + Math.random().toString(36).slice(2, 5), date, text, pillar: pillar || "occhio", done: false }].concat(tasks));
+  const addTask = (date, text, pillar) => setTasks([{ id: "t" + Date.now() + Math.random().toString(36).slice(2, 5),
+    date, text, pillar: pillar || null, done: false }].concat(tasks));
+  const addFlying = () => {
+    const v = flying.trim();
+    if (!v) return;
+    addTask(tk, v, null);
+    setFlying("");
+  };
 
-  let d = 0; const next = () => (d += 70);
+  let d = 0; const next = () => (d += 60);
+
+  const pinned = (medals || []).find((m) => m.id === state.pinnedMedal && m.unlocked);
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
+
+      {pinned && (
+        <Rise d={next()}>
+          <PinnedMedal medal={pinned} streak={consistency.streak} best={consistency.best} />
+        </Rise>
+      )}
+
+      {/* ── CRUSCOTTO: tutto a colpo d'occhio, niente cassetti ── */}
       <Rise d={next()}>
-        <Card glow={allDone ? FC.correct : null}>
-          <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
-            <Ring value={doneToday} total={totalToday} color={allDone ? FC.correct : FC.under} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: "-0.025em", marginBottom: 5 }}>
-                {allDone ? "Giornata chiusa." : doneToday === 0 ? "Si comincia." : "In movimento."}
+        <Card glow={allDone ? FC.correct : held ? FC.high : null}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 18, gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.03em" }}>
+                {allDone ? "Giornata chiusa." : score === 0 ? "Si comincia." : held ? "Giornata salva." : "In movimento."}
               </div>
-              <p style={{ margin: 0, fontSize: 14.5, color: C.mut, lineHeight: 1.55 }}>
-                {allDone ? "Tutto fatto. Il resto di oggi è tuo."
-                  : "Ti bastano " + consistency.soglia + " non negoziabili per far contare la giornata."}
-              </p>
+              <div style={{ fontSize: 14, color: C.mut, marginTop: 3 }}>
+                {allDone ? "Tutto verde. Il resto di oggi è tuo."
+                  : held ? "Hai già superato la soglia. Tutto quello che aggiungi è guadagnato."
+                  : "Ti serve " + consistency.soglia + " su " + core.length + " perché il giorno conti. Sei a " + (score % 1 ? score.toFixed(1) : score) + "."}
+              </div>
             </div>
           </div>
 
-          {todayTasks.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <Label color={FC.low}>Le cose di oggi</Label>
-              {todayTasks.map((t) => (
-                <div key={t.id} className="row" style={{ display: "flex", alignItems: "flex-start", gap: 13, padding: "11px 8px" }}>
-                  <button className="btn" onClick={() => toggleTask(t.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", marginTop: 1 }}>
-                    <Radio done={t.done} color={P[t.pillar] ? P[t.pillar].hue : FC.low} size={22} />
-                  </button>
-                  <input value={t.text} onChange={(e) => editTask(t.id, e.target.value)} style={{
-                    flex: 1, background: "transparent", border: "none", outline: "none", padding: 0,
-                    color: t.done ? C.dim : C.txt, fontSize: 16, fontFamily: "inherit", lineHeight: 1.5,
-                    textDecoration: t.done ? "line-through" : "none",
-                  }} />
-                  <button className="btn" onClick={() => rmTask(t.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ marginTop: todayTasks.length ? 18 : 20 }}>
-            <Label>Non negoziabili</Label>
-            {core.length === 0 && <Empty>Aggiungi le tue azioni quotidiane dalle impostazioni.</Empty>}
-            {core.map((h) => <HabitRow key={h.id} h={h} done={!!entry[h.id]} onToggle={() => toggle(h.id)} />)}
-            {extra.length > 0 && (
-              <>
-                <Label style={{ marginTop: 20 }}>Se ne hai voglia</Label>
-                {extra.map((h) => <HabitRow key={h.id} h={h} done={!!entry[h.id]} onToggle={() => toggle(h.id)} />)}
-              </>
-            )}
+          <div className="dash">
+            {states.map(({ h, st }) => (
+              <button key={h.id} className="btn dashcell" onClick={() => setOpenId(openId === h.id ? null : h.id)}>
+                <Ring value={Math.round(st.pct * 100)} total={100} size={62} color={st.color}
+                  label={st.status === "full" ? "✓" : st.tot > 1 ? st.done + "/" + st.tot : ""} />
+                <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.25, textAlign: "center",
+                  color: st.status === "none" ? C.dim : C.txt }}>{h.label}</span>
+                {!h.core && <span style={{ fontSize: 9.5, color: C.dim }}>secondaria</span>}
+              </button>
+            ))}
           </div>
         </Card>
       </Rise>
 
+      {/* ── ABITUDINI A NIDO ── */}
       <Rise d={next()}>
-        <Agenda state={state} tasks={tasks} addTask={addTask} toggleTask={toggleTask} editTask={editTask} rmTask={rmTask} exposure={exposure} />
+        <Card>
+          <Label>Non negoziabili</Label>
+          {core.length === 0 && <Empty>Nessuna macro-categoria. Creale dall'ingranaggio in alto.</Empty>}
+          {core.map(({ h, st }) => (
+            <MacroRow key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
+              onOpen={() => setOpenId(openId === h.id ? null : h.id)}
+              onMacro={() => toggleMacro(h)} onSub={(sb) => toggleSub(h, sb)} />
+          ))}
+          {extra.length > 0 && (
+            <>
+              <Label style={{ marginTop: 22 }}>Secondarie</Label>
+              {extra.map(({ h, st }) => (
+                <MacroRow key={h.id} h={h} st={st} entry={entry} open={openId === h.id}
+                  onOpen={() => setOpenId(openId === h.id ? null : h.id)}
+                  onMacro={() => toggleMacro(h)} onSub={(sb) => toggleSub(h, sb)} />
+              ))}
+            </>
+          )}
+        </Card>
+      </Rise>
+
+      {/* ── TASK VOLANTI ── */}
+      <Rise d={next()}>
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <Label style={{ margin: 0 }}>Le cose di oggi</Label>
+            {todayTasks.length > 0 && <span style={{ fontSize: 13, color: C.mut }}>{doneTasks}/{todayTasks.length}</span>}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginBottom: todayTasks.length ? 14 : 0 }}>
+            <input value={flying} onChange={(e) => setFlying(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFlying(); } }}
+              placeholder="Portare fuori il cane, chiamare il commercialista…"
+              style={Object.assign({}, inputBase, { flex: 1 })} />
+            <button className="btn" onClick={addFlying} style={{
+              width: 48, borderRadius: 16, border: "none", flexShrink: 0,
+              background: C.txt, color: "#141416", cursor: "pointer", display: "grid", placeItems: "center",
+            }}><Plus size={18} /></button>
+          </div>
+
+          {todayTasks.map((t) => (
+            <div key={t.id} className="row" style={{ display: "flex", alignItems: "flex-start", gap: 13, padding: "11px 8px" }}>
+              <button className="btn" onClick={() => toggleTask(t.id)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", marginTop: 1 }}>
+                <Radio done={t.done} color={t.pillar && P[t.pillar] ? P[t.pillar].hue : FC.low} size={22} />
+              </button>
+              <input value={t.text} onChange={(e) => editTask(t.id, e.target.value)} style={{
+                flex: 1, background: "transparent", border: "none", outline: "none", padding: 0,
+                color: t.done ? C.dim : C.txt, fontFamily: "inherit", lineHeight: 1.5,
+                textDecoration: t.done ? "line-through" : "none",
+              }} />
+              <button className="btn" onClick={() => rmTask(t.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </Card>
+      </Rise>
+
+      <Rise d={next()}>
+        <Agenda state={state} tasks={tasks} addTask={addTask} toggleTask={toggleTask}
+          editTask={editTask} rmTask={rmTask} exposure={exposure} />
       </Rise>
 
       {darkest && (
@@ -1179,7 +1544,169 @@ function Oggi({ state, persist, exposure, consistency }) {
   );
 }
 
-/* Agenda: aggiungi una cosa a qualsiasi giorno */
+/* Riga a nido: la macro sopra, i sub dentro una tendina */
+function MacroRow({ h, st, entry, open, onOpen, onMacro, onSub }) {
+  const subs = h.subs || [];
+  const label = st.status === "full" ? "fatto" : st.status === "part" ? st.done + " su " + st.tot : subs.length ? subs.length + " passi" : "";
+  return (
+    <div style={{ borderTop: "1px solid " + C.line }}>
+      <div className="row" style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 8px" }}>
+        <button className="btn" onClick={onMacro} style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
+          <Radio done={st.status === "full"} color={st.color} size={26} />
+        </button>
+        <button onClick={subs.length ? onOpen : onMacro} style={{
+          flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, cursor: "pointer",
+          textAlign: "left", fontFamily: "inherit",
+        }}>
+          <div style={{ fontSize: 16.5, fontWeight: 500, color: st.status === "full" ? C.dim : C.txt,
+            textDecoration: st.status === "full" ? "line-through" : "none" }}>{h.label}</div>
+          {label && <div style={{ fontSize: 12.5, color: st.status === "part" ? FC.high : C.dim, marginTop: 2 }}>{label}</div>}
+        </button>
+        {subs.length > 0 && (
+          <button className="btn" onClick={onOpen} style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: C.dim }}>
+            <ChevronDown size={17} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .25s" }} />
+          </button>
+        )}
+      </div>
+
+      {open && subs.length > 0 && (
+        <div className="rise" style={{ paddingLeft: 22, paddingBottom: 8, marginLeft: 16,
+          borderLeft: "2px solid " + st.color + "44" }}>
+          {subs.map((sb) => {
+            const on = !!entry[h.id + "." + sb.id];
+            return (
+              <button key={sb.id} className="row" onClick={() => onSub(sb)} style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%", background: "transparent",
+                border: "none", padding: "10px 8px", cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+              }}>
+                <Radio done={on} color={st.color} size={20} />
+                <span style={{ flex: 1, fontSize: 15, color: on ? C.dim : C.txt,
+                  textDecoration: on ? "line-through" : "none" }}>{sb.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Medaglia fissata in Focus ─────────────────────────────── */
+function PinnedMedal({ medal, streak, best }) {
+  const prossima = MEDALS.find((m) => m.days > best);
+  return (
+    <Card glow="#C9A24B" pad={20}>
+      <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        <div className="medal-shine" style={{ width: 96, height: 96, flexShrink: 0,
+          display: "grid", placeItems: "center" }}>
+          <img src={medal.img} alt={medal.name}
+            style={{ width: "100%", height: "100%", objectFit: "contain",
+              filter: "drop-shadow(0 4px 14px rgba(201,162,75,.35))" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, color: "#C9A24B", fontWeight: 600, marginBottom: 3 }}>
+            {medal.name}
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span key={streak} className="pop" style={{ fontSize: 40, fontWeight: 700,
+              letterSpacing: "-0.045em", lineHeight: 1 }}>{streak}</span>
+            <span style={{ fontSize: 15, color: C.mut }}>
+              giorn{streak === 1 ? "o" : "i"} di fila
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 6 }}>
+            Record personale: {best}{prossima ? " · prossima medaglia a " + prossima.days : " · le hai tutte"}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ── Galleria trofei ───────────────────────────────────────── */
+function Trofei({ state, persist, consistency, medals }) {
+  const pin = (id) => persist(Object.assign({}, state, {
+    pinnedMedal: state.pinnedMedal === id ? null : id,
+  }));
+  const unlockedN = medals.filter((m) => m.unlocked).length;
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <Rise>
+        <Card glow="#C9A24B">
+          <Label>Il tuo record</Label>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
+            <span style={{ fontSize: 44, fontWeight: 700, letterSpacing: "-0.045em", color: "#C9A24B" }}>
+              {consistency.best}
+            </span>
+            <span style={{ fontSize: 15, color: C.mut }}>giorni di fila, il tuo massimo</span>
+          </div>
+          <p style={{ margin: 0, fontSize: 14.5, color: C.mut, lineHeight: 1.6 }}>
+            Adesso sei a {consistency.streak} di fila. {unlockedN} medagli{unlockedN === 1 ? "a" : "e"} su {medals.length}.
+            Una volta sbloccata resta tua per sempre, anche se salti un giorno: qui non si torna indietro.
+          </p>
+        </Card>
+      </Rise>
+
+      <div className="medalgrid">
+        {medals.map((m, i) => {
+          const pinned = state.pinnedMedal === m.id;
+          return (
+            <Rise key={m.id} d={i * 60}>
+              <button className="btn" onClick={() => m.unlocked && pin(m.id)} style={{
+                width: "100%", background: C.card, border: "1px solid " + (pinned ? "#C9A24B" : C.line),
+                borderRadius: 22, padding: "20px 14px 16px", cursor: m.unlocked ? "pointer" : "default",
+                fontFamily: "inherit", display: "flex", flexDirection: "column", alignItems: "center", gap: 10,
+                boxShadow: C.shadow, position: "relative",
+              }}>
+                <div style={{ width: 104, height: 104, display: "grid", placeItems: "center", position: "relative" }}>
+                  {m.img ? (
+                    <img src={m.img} alt="" style={{
+                      width: "100%", height: "100%", objectFit: "contain",
+                      filter: m.unlocked ? "drop-shadow(0 3px 12px rgba(201,162,75,.3))"
+                        : "grayscale(1) brightness(.4) contrast(.8)",
+                      opacity: m.unlocked ? 1 : 0.5, transition: "filter .3s",
+                    }} />
+                  ) : (
+                    <div style={{ width: 86, height: 86, borderRadius: 999,
+                      background: m.unlocked ? "#C9A24B22" : C.card2,
+                      display: "grid", placeItems: "center", color: m.unlocked ? "#C9A24B" : C.dim }}>
+                      <Rocket size={30} />
+                    </div>
+                  )}
+                  {!m.unlocked && (
+                    <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
+                      <div style={{ width: 34, height: 34, borderRadius: 999, background: C.bg + "D0",
+                        display: "grid", placeItems: "center", border: "1px solid " + C.line }}>
+                        <Lock size={15} color={C.mut} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 14.5, fontWeight: 600, color: m.unlocked ? C.txt : C.dim,
+                    letterSpacing: "-0.02em" }}>{m.name}</div>
+                  <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>{m.days} giorni · {m.sub}</div>
+                </div>
+                {pinned ? (
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: "#C9A24B",
+                    display: "flex", alignItems: "center", gap: 4 }}>
+                    <Check size={12} /> in Focus
+                  </span>
+                ) : m.unlocked ? (
+                  <span style={{ fontSize: 11.5, color: C.dim }}>tocca per fissarla</span>
+                ) : (
+                  <span style={{ fontSize: 11.5, color: C.dim }}>bloccata</span>
+                )}
+              </button>
+            </Rise>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Agenda({ tasks, addTask, toggleTask, editTask, rmTask, exposure }) {
   const [sel, setSel] = useState(todayKey());
   const [txt, setTxt] = useState("");
@@ -1313,8 +1840,8 @@ function Consistency({ c }) {
         {c.grid.map((g, i) => (
           <div key={g.date} title={g.date} className="rise" style={{
             aspectRatio: "1", borderRadius: 6, animationDelay: (i * 14) + "ms",
-            background: g.full ? FC.correct : g.held ? FC.correct + "55" : C.card2,
-            border: "1px solid " + (g.held ? "transparent" : C.line),
+            background: g.full ? FC.correct : g.held ? FC.correct + "66" : g.touched ? FC.high + "44" : C.card2,
+            border: "1px solid " + (g.held || g.touched ? "transparent" : C.line),
           }} />
         ))}
       </div>
@@ -3219,64 +3746,239 @@ kafa.metrics.map((m) => "· " + m.name + ": " + Math.round(m.v * m.max) + "/" + 
 }
 
 /* ── CONFIG ────────────────────────────────────────────────── */
+/* ── Account e sincronizzazione ───────────────────────────────
+   Login con magic link: niente password da ricordare, che con
+   l'ADHD è metà della battaglia. Ricevi una mail, tocchi il
+   link, sei dentro e i dati ti seguono su ogni dispositivo.    */
+function Account({ user, sync, onAuth, onLogout }) {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    if (!CLOUD_ON) return;
+    let alive = true;
+    (async () => {
+      const client = await getSb();
+      if (!client) return;
+      const { data: sub } = client.auth.onAuthStateChange((_e, session) => {
+        if (alive && session && session.user) onAuth(session.user);
+      });
+      return () => sub && sub.subscription && sub.subscription.unsubscribe();
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  if (!CLOUD_ON) {
+    return (
+      <Card>
+        <Label>Sincronizzazione</Label>
+        <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: 0 }}>
+          Il cloud non è configurato: i dati vivono solo su questo dispositivo.
+          Per attivarlo servono le chiavi Supabase nelle variabili d'ambiente — le istruzioni sono nel README.
+        </p>
+      </Card>
+    );
+  }
+
+  const send = async () => {
+    const e = email.trim();
+    if (!e || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const client = await getSb();
+      const { error } = await client.auth.signInWithOtp({
+        email: e, options: { emailRedirectTo: window.location.origin },
+      });
+      if (error) throw error;
+      setSent(true);
+    } catch (x) { setErr("Non sono riuscito a inviare il link. Controlla l'indirizzo e riprova."); }
+    setBusy(false);
+  };
+
+  if (user) {
+    const label = sync === "synced" ? "Tutto salvato sul cloud"
+      : sync === "loading" ? "Sto salvando…"
+      : sync === "offline" ? "Offline — salvo appena torna la rete" : "";
+    const col = sync === "synced" ? FC.correct : sync === "offline" ? FC.clip : FC.high;
+    return (
+      <Card glow={FC.correct}>
+        <Label>Account</Label>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <span className={sync === "loading" ? "breathe" : ""}
+            style={{ width: 9, height: 9, borderRadius: 999, background: col, flexShrink: 0 }} />
+          <span style={{ fontSize: 15, fontWeight: 500 }}>{label}</span>
+        </div>
+        <p style={{ color: C.mut, fontSize: 14, lineHeight: 1.6, margin: "0 0 16px" }}>
+          {user.email}. I tuoi dati sono su un server e ti seguono su ogni dispositivo dove entri
+          con questa mail.
+        </p>
+        <Btn kind="quiet" onClick={onLogout}>Esci da questo dispositivo</Btn>
+      </Card>
+    );
+  }
+
+  return (
+    <Card glow={FC.under}>
+      <Label>Sincronizza su tutti i dispositivi</Label>
+      {sent ? (
+        <p style={{ color: C.mut, fontSize: 15, lineHeight: 1.65, margin: 0 }}>
+          Ti ho mandato un link a <strong style={{ color: C.txt }}>{email}</strong>. Aprilo su questo
+          dispositivo per entrare. Da lì in poi i dati si salvano da soli sul cloud, e li ritrovi
+          ovunque entri con la stessa mail.
+        </p>
+      ) : (
+        <>
+          <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 16px" }}>
+            Entra con la mail e i tuoi dati smettono di vivere solo qui: finiscono su un server,
+            al sicuro anche se cambi telefono. Nessuna password — ricevi un link e tocchi.
+          </p>
+          <Field label="La tua email" type="email" value={email} placeholder="tu@esempio.com"
+            onChange={(e) => setEmail(e.target.value)} />
+          {err && <p style={{ color: FC.clip, fontSize: 14, margin: "0 0 14px", lineHeight: 1.55 }}>{err}</p>}
+          <Btn kind="solid" full onClick={send} style={{ opacity: busy ? 0.5 : 1 }}>
+            {busy ? "Invio…" : "Mandami il link"}
+          </Btn>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function Config({ state, persist, inc }) {
   const p = state.profile;
   const set = (patch) => persist(Object.assign({}, state, { profile: Object.assign({}, p, patch) }));
-  const [nh, setNh] = useState({ label: "", pillar: "lingua", core: true });
-  const addHabit = () => {
-    if (!nh.label.trim()) return;
-    persist(Object.assign({}, state, { habits: state.habits.concat([Object.assign({ id: "h" + Date.now() }, nh)]) }));
-    setNh({ label: "", pillar: nh.pillar, core: true });
+  const habits = state.habits || [];
+  const [openId, setOpenId] = useState(null);
+  const [newMacro, setNewMacro] = useState("");
+  const nCore = habits.filter((h) => h.core).length;
+
+  const setHabits = (list) => persist(Object.assign({}, state, { habits: list }));
+  const upd = (id, patch) => setHabits(habits.map((h) => (h.id === id ? Object.assign({}, h, patch) : h)));
+  const addMacro = () => {
+    const v = newMacro.trim();
+    if (!v) return;
+    const id = "m" + Date.now();
+    setHabits(habits.concat([{ id, label: v, pillar: "occhio", core: true, subs: [] }]));
+    setNewMacro(""); setOpenId(id);
   };
-  const del = (id) => persist(Object.assign({}, state, { habits: state.habits.filter((h) => h.id !== id) }));
-  const toggleCore = (id) => persist(Object.assign({}, state, {
-    habits: state.habits.map((h) => (h.id === id ? Object.assign({}, h, { core: !h.core }) : h)),
-  }));
-  const nCore = state.habits.filter((h) => h.core).length;
+  const rmMacro = (id) => {
+    if (!window.confirm("Elimino la categoria e i suoi passi?")) return;
+    setHabits(habits.filter((h) => h.id !== id));
+  };
+  const addSub = (h, label) => {
+    const v = (label || "").trim();
+    if (!v) return;
+    upd(h.id, { subs: (h.subs || []).concat([{ id: "s" + Date.now(), label: v }]) });
+  };
+  const updSub = (h, sid, label) => upd(h.id, { subs: (h.subs || []).map((x) => (x.id === sid ? Object.assign({}, x, { label }) : x)) });
+  const rmSub = (h, sid) => upd(h.id, { subs: (h.subs || []).filter((x) => x.id !== sid) });
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <Rise>
-        <Card>
-          <Label>I numeri di base</Label>
-          <Field label="Risparmi attuali (€)" type="number" value={p.savings} onChange={(e) => set({ savings: Number(e.target.value) })} />
-          <Field label="Stima grezza di quanto entra al mese (€)" type="number" value={p.incomeEstimate}
-            onChange={(e) => set({ incomeEstimate: Number(e.target.value) })}
-            hint={"Solo un punto di partenza. Adesso l'app usa " + eur(inc.value) + " · " + inc.tier.toLowerCase() + "."} />
-          <Field label="Budget totale Corea (€)" type="number" value={p.koreaBudget} onChange={(e) => set({ koreaBudget: Number(e.target.value) })} />
-          <Field label="Mesi che deve coprire" type="number" value={p.koreaMonths} onChange={(e) => set({ koreaMonths: Number(e.target.value) })} />
-          <Field label="Data di partenza" type="date" value={p.targetDate} onChange={(e) => set({ targetDate: e.target.value })} />
-        </Card>
-      </Rise>
-      <Rise d={70}>
-        <Card>
-          <Label>Azioni quotidiane</Label>
-          <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 14px" }}>
-            Tieni al massimo 5 non negoziabili{nCore > 5 && <span style={{ color: FC.high }}> — adesso ne hai {nCore}</span>}.
-            Ne basta la metà perché una giornata conti come tenuta.
-          </p>
-          {state.habits.map((h) => (
-            <div key={h.id} className="row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 8px", borderTop: "1px solid " + C.line }}>
-              <Dot color={P[h.pillar].hue} size={7} />
-              <span style={{ flex: 1, fontSize: 15, minWidth: 0 }}>{h.label}</span>
-              <button className="btn" onClick={() => toggleCore(h.id)} style={{
-                fontSize: 12, fontWeight: 600, padding: "4px 11px", borderRadius: 999, cursor: "pointer",
-                border: "none", fontFamily: "inherit",
-                background: h.core ? FC.correct + "1F" : C.card2, color: h.core ? FC.correct : C.dim,
-              }}>{h.core ? "core" : "bonus"}</button>
-              <button className="btn" onClick={() => del(h.id)} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
-                <X size={14} />
-              </button>
+      <Card>
+        <Label>Le tue categorie</Label>
+        <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 16px" }}>
+          Una categoria è un anello sul cruscotto. Dentro ci metti i passi che la compongono:
+          chiudili tutti e diventa verde, chiudine qualcuno e resta arancione — che è comunque
+          un giorno in cui hai fatto qualcosa.
+          {nCore > 5 && <span style={{ color: FC.high }}> Ne hai {nCore} intrascendibili: oltre cinque smetti di farle tutte.</span>}
+        </p>
+
+        {habits.map((h) => {
+          const open = openId === h.id;
+          const pil = P[h.pillar] || PILLARS[1];
+          return (
+            <div key={h.id} style={{ borderTop: "1px solid " + C.line }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "12px 4px" }}>
+                <Dot color={pil.hue} size={8} />
+                <input value={h.label} onChange={(e) => upd(h.id, { label: e.target.value })} style={{
+                  flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none",
+                  color: C.txt, fontFamily: "inherit", fontWeight: 500, padding: 0,
+                }} />
+                <span style={{ fontSize: 12.5, color: C.dim, whiteSpace: "nowrap" }}>
+                  {(h.subs || []).length || 0} passi
+                </span>
+                <button className="btn" onClick={() => setOpenId(open ? null : h.id)} style={{
+                  background: "none", border: "none", cursor: "pointer", padding: 6, color: C.dim }}>
+                  <ChevronDown size={17} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .25s" }} />
+                </button>
+              </div>
+
+              {open && (
+                <div className="rise" style={{ padding: "4px 4px 18px" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                    <button className="btn" onClick={() => upd(h.id, { core: !h.core })} style={{
+                      fontSize: 13, fontFamily: "inherit", padding: "8px 14px", borderRadius: 999, cursor: "pointer",
+                      border: "1px solid " + (h.core ? FC.correct + "55" : C.line),
+                      background: h.core ? FC.correct + "1A" : "transparent",
+                      color: h.core ? FC.correct : C.dim,
+                    }}>{h.core ? "intrascendibile" : "secondaria"}</button>
+
+                    {PILLARS.map((pp) => (
+                      <button key={pp.id} className="btn" onClick={() => upd(h.id, { pillar: pp.id })} style={{
+                        fontSize: 13, fontFamily: "inherit", padding: "8px 13px", borderRadius: 999, cursor: "pointer",
+                        border: "1px solid " + (h.pillar === pp.id ? pp.hue + "55" : C.line),
+                        background: h.pillar === pp.id ? pp.hue + "1A" : "transparent",
+                        color: h.pillar === pp.id ? pp.hue : C.dim,
+                      }}>{pp.name}</button>
+                    ))}
+                  </div>
+
+                  <div style={{ paddingLeft: 14, borderLeft: "2px solid " + pil.hue + "33" }}>
+                    {(h.subs || []).map((sb) => (
+                      <div key={sb.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
+                        <Dot color={C.dim} size={5} />
+                        <input value={sb.label} onChange={(e) => updSub(h, sb.id, e.target.value)} style={{
+                          flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none",
+                          color: C.txt, fontFamily: "inherit", padding: 0,
+                        }} />
+                        <button className="btn" onClick={() => rmSub(h, sb.id)} style={{
+                          background: "none", border: "none", color: C.dim, cursor: "pointer", padding: 4 }}>
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    <SubAdder onAdd={(v) => addSub(h, v)} />
+                  </div>
+
+                  <Btn kind="danger" onClick={() => rmMacro(h.id)}
+                    style={{ marginTop: 16, fontSize: 13, padding: "9px 15px" }}>
+                    Elimina categoria
+                  </Btn>
+                </div>
+              )}
             </div>
-          ))}
-          <div style={{ marginTop: 18, display: "grid", gap: 10 }}>
-            <input value={nh.label} placeholder="Nuova azione quotidiana"
-              onChange={(e) => setNh(Object.assign({}, nh, { label: e.target.value }))} style={inputBase} />
-            <Select value={nh.pillar} options={PILLARS} onChange={(e) => setNh(Object.assign({}, nh, { pillar: e.target.value }))} />
-            <Btn kind="solid" onClick={addHabit}>Aggiungi</Btn>
-          </div>
-        </Card>
-      </Rise>
+          );
+        })}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <input value={newMacro} onChange={(e) => setNewMacro(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addMacro(); } }}
+            placeholder="Nuova categoria — Coreano, Corpo, Lettura…"
+            style={Object.assign({}, inputBase, { flex: 1 })} />
+          <button className="btn" onClick={addMacro} style={{
+            width: 48, borderRadius: 16, border: "none", flexShrink: 0,
+            background: C.txt, color: "#141416", cursor: "pointer", display: "grid", placeItems: "center",
+          }}><Plus size={18} /></button>
+        </div>
+      </Card>
+
+      <Card>
+        <Label>I numeri di base</Label>
+        <Field label="Risparmi attuali (€)" type="number" value={p.savings} onChange={(e) => set({ savings: Number(e.target.value) })} />
+        <Field label="Stima grezza di quanto entra al mese (€)" type="number" value={p.incomeEstimate}
+          onChange={(e) => set({ incomeEstimate: Number(e.target.value) })}
+          hint={"Solo un punto di partenza. Adesso l'app usa " + eur(inc.value) + " · " + inc.tier.toLowerCase() + "."} />
+        <Field label="Budget totale Corea (€)" type="number" value={p.koreaBudget} onChange={(e) => set({ koreaBudget: Number(e.target.value) })} />
+        <Field label="Mesi che deve coprire" type="number" value={p.koreaMonths} onChange={(e) => set({ koreaMonths: Number(e.target.value) })} />
+        <Field label="Data di partenza" type="date" value={p.targetDate} onChange={(e) => set({ targetDate: e.target.value })} />
+        <Field label="Data dell'esame TOPIK" type="date" value={p.topikDate || ""} onChange={(e) => set({ topikDate: e.target.value })} />
+      </Card>
+
+      <Backup state={state} persist={persist} />
+
       <Card>
         <Label color={FC.clip}>Zona pericolosa</Label>
         <Btn kind="danger" onClick={async () => {
@@ -3285,6 +3987,94 @@ function Config({ state, persist, inc }) {
           persist(DEFAULT_STATE);
         }}>Cancella tutto e ricomincia</Btn>
       </Card>
+    </div>
+  );
+}
+
+/* ── Backup ───────────────────────────────────────────────────
+   Non c'è un server. Questo file è l'unica copia dei tuoi dati
+   che esiste fuori dal browser di questo dispositivo.          */
+function Backup({ state, persist }) {
+  const fileRef = useRef(null);
+  const [msg, setMsg] = useState(null);
+
+  const counts = [
+    ["lavori", (state.jobs || []).length],
+    ["spese", (state.expenses || []).length],
+    ["portfolio", (state.portfolio || []).length],
+    ["diario", (state.watch || []).length],
+    ["referti", (state.clinic || []).length],
+    ["log TOPIK", (state.topikLogs || []).length],
+    ["idee", (state.ideas || []).length],
+  ].filter(([, n]) => n > 0);
+
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify(Object.assign({}, state, { v: SCHEMA }), null, 2)],
+      { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "kdop-backup-" + todayKey() + ".json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setMsg({ t: "Backup scaricato. Mettilo dove lo ritrovi.", c: FC.correct });
+  };
+
+  const importJson = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const parsed = JSON.parse(String(r.result));
+        if (!parsed || typeof parsed !== "object" || !parsed.profile) throw new Error("formato");
+        if (!window.confirm("Sostituisco tutti i dati attuali con quelli del file. Procedo?")) return;
+        persist(migrate(parsed));
+        setMsg({ t: "Dati ripristinati.", c: FC.correct });
+      } catch (err) {
+        setMsg({ t: "File non valido: non sembra un backup di K-DOP OS.", c: FC.clip });
+      }
+    };
+    r.readAsText(file);
+    e.target.value = "";
+  };
+
+  return (
+    <Card>
+      <Label>Backup</Label>
+      <p style={{ color: C.mut, fontSize: 14.5, lineHeight: 1.6, margin: "0 0 8px" }}>
+        Non esiste un server: tutto quello che vedi vive solo in questo browser, su questo dispositivo.
+        Se svuoti i dati del sito o cambi telefono, sparisce. Scarica un backup ogni tanto —
+        è anche il modo per portarti i dati dal telefono al computer.
+      </p>
+      {counts.length > 0 && (
+        <p style={{ color: C.dim, fontSize: 13, lineHeight: 1.6, margin: "0 0 16px" }}>
+          Adesso dentro ci sono: {counts.map(([k, n]) => n + " " + k).join(" · ")}.
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <Btn kind="solid" onClick={exportJson} style={{ flex: 1, minWidth: 150 }}>Scarica backup</Btn>
+        <Btn kind="ghost" onClick={() => fileRef.current && fileRef.current.click()}
+          style={{ flex: 1, minWidth: 150 }}>Ripristina da file</Btn>
+      </div>
+      <input ref={fileRef} type="file" accept="application/json,.json"
+        onChange={importJson} style={{ display: "none" }} />
+      {msg && <p style={{ fontSize: 14, color: msg.c, margin: "14px 0 0", lineHeight: 1.55 }}>{msg.t}</p>}
+    </Card>
+  );
+}
+
+function SubAdder({ onAdd }) {
+  const [v, setV] = useState("");
+  const go = () => { if (v.trim()) { onAdd(v); setV(""); } };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 6 }}>
+      <Plus size={13} color={C.dim} />
+      <input value={v} onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); go(); } }}
+        onBlur={go} placeholder="Aggiungi un passo"
+        style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none",
+          color: C.txt, fontFamily: "inherit", padding: "4px 0" }} />
     </div>
   );
 }
