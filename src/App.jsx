@@ -20,7 +20,7 @@ import {
    converte il vecchio nel nuovo. Così posso cambiare la
    struttura dell'app senza farti perdere niente.              */
 const STORE_KEY = "kdop:state";
-const SCHEMA = 6;
+const SCHEMA = 7;
 
 /* Chiavi delle versioni precedenti, dalla più recente in giù.
    Vengono lette una volta sola e mai cancellate: restano lì
@@ -56,6 +56,13 @@ function migrate(input) {
   if (!Array.isArray(d.medalSeen)) d.medalSeen = [];
   if (d.pinnedMedal === undefined) d.pinnedMedal = null;
   ["name", "avatar", "bio"].forEach((k) => { if (typeof d.profile[k] !== "string") d.profile[k] = ""; });
+
+  /* → 7: la soglia diventa un numero tuo, non più metà delle
+     categorie del momento. Prima bastava aggiungere una categoria
+     perché la soglia salisse e tutti i giorni passati venissero
+     ri-giudicati: lo streak crollava a zero senza che tu avessi
+     saltato niente. 0 = automatica, come prima. */
+  if (typeof d.profile.soglia !== "number" || d.profile.soglia < 0) d.profile.soglia = 0;
 
   d.v = SCHEMA;
   return d;
@@ -157,6 +164,63 @@ async function cloudSave(userId, stateObj) {
     .upsert({ user_id: userId, data: stateObj, updated_at: new Date().toISOString() },
       { onConflict: "user_id" });
   return !error;
+}
+
+/* ── Fusione locale + cloud ───────────────────────────────────
+   Prima al login vinceva sempre il cloud, e chi entrava per la
+   prima volta da un dispositivo vuoto si portava via la storia
+   dell'altro. Adesso le due copie si uniscono: nessuna spunta,
+   nessun lavoro e nessuna nota spariscono perché un dispositivo
+   era rimasto indietro.                                        */
+const ID_LISTS = ["expenses", "jobs", "goals", "ideas", "tasks", "portfolio",
+  "watch", "clinic", "topikLogs", "wishlist", "scheduledJobs"];
+
+function mergeStates(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const out = Object.assign({}, a, b);
+
+  /* profilo: campo per campo, vince chi ha davvero qualcosa */
+  out.profile = Object.assign({}, a.profile || {}, b.profile || {});
+  Object.keys(a.profile || {}).forEach((k) => {
+    const va = a.profile[k], vb = out.profile[k];
+    if (va && (vb === "" || vb === 0 || vb == null)) out.profile[k] = va;
+  });
+
+  /* log: unione dei giorni. Se un giorno esiste in entrambi,
+     una spunta messa da una parte resta messa. */
+  out.log = {};
+  const days = new Set(Object.keys(a.log || {}).concat(Object.keys(b.log || {})));
+  days.forEach((d) => {
+    const ea = (a.log || {})[d] || {}, eb = (b.log || {})[d] || {};
+    const e = Object.assign({}, ea, eb);
+    Object.keys(ea).forEach((k) => { if (ea[k]) e[k] = true; });
+    out.log[d] = e;
+  });
+
+  /* liste: unione per id, senza doppioni */
+  ID_LISTS.forEach((k) => {
+    const seen = new Set(), list = [];
+    (b[k] || []).concat(a[k] || []).forEach((x) => {
+      if (!x) return;
+      if (x.id) { if (seen.has(x.id)) return; seen.add(x.id); }
+      list.push(x);
+    });
+    out[k] = list;
+  });
+
+  const hs = new Set(), habits = [];
+  (b.habits || []).concat(a.habits || []).forEach((h) => {
+    if (!h || !h.id || hs.has(h.id)) return;
+    hs.add(h.id); habits.push(h);
+  });
+  if (habits.length) out.habits = habits;
+
+  out.topikRoadmap = Object.assign({}, a.topikRoadmap || {}, b.topikRoadmap || {});
+  out.plan = Object.assign({}, a.plan || {}, b.plan || {});
+  out.medalSeen = Array.from(new Set((a.medalSeen || []).concat(b.medalSeen || [])));
+  out.pinnedMedal = b.pinnedMedal || a.pinnedMedal || null;
+  return out;
 }
 
 /* Sessione: ritorna l'utente loggato o null */
@@ -309,6 +373,38 @@ const habitWeight = (h, entry) => {
   return st.status === "full" ? 1 : st.status === "part" ? 0.5 : 0;
 };
 
+/* ── Soglia e verdetto del giorno ─────────────────────────────
+   Due regole, per non riscrivere il passato:
+   1. la soglia è un numero fisso tuo, non metà delle categorie
+      che hai oggi — così aggiungerne una non alza l'asticella
+      anche per i giorni già chiusi;
+   2. quando tocchi un giorno, il suo verdetto viene timbrato
+      dentro il log. Da lì in poi quel giorno è deciso, qualunque
+      cosa tu cambi dopo nelle categorie.                        */
+const coreOf = (state) => (state.habits || []).filter((h) => h.core);
+
+const sogliaOf = (state) => {
+  const n = coreOf(state).length;
+  const set = Number((state.profile || {}).soglia) || 0;
+  return set > 0 ? Math.min(set, n) : Math.ceil(n / 2);
+};
+
+const dayScore = (state, entry) =>
+  coreOf(state).reduce((s, h) => s + habitWeight(h, entry || {}), 0);
+
+const dayHeld = (state, dk) => {
+  const e = (state.log || {})[dk];
+  if (!e) return false;
+  if (typeof e._held === "boolean") return e._held;   /* già timbrato */
+  return dayScore(state, e) >= sogliaOf(state);
+};
+
+/* Timbra il verdetto sul giorno che si sta scrivendo */
+const stampDay = (state, entry) => Object.assign({}, entry, {
+  _held: dayScore(state, entry) >= sogliaOf(state),
+  _soglia: sogliaOf(state),
+});
+
 
 /* ── Il Piano: 5 fasi ──────────────────────────────────────── */
 const PHASES = [
@@ -454,8 +550,13 @@ const TOPIK_PLAN = [
 const TOPIK_TOTAL = TOPIK_PLAN.reduce((s, c) => s + c.groups.reduce((n, g) => n + g.items.length, 0), 0);
 
 /* ── utils ─────────────────────────────────────────────────── */
-const todayKey = () => new Date().toISOString().slice(0, 10);
-const dayKey = (d) => d.toISOString().slice(0, 10);
+/* Data LOCALE, non UTC. Con toISOString() una spunta messa
+   all'una di notte in Italia finiva sul giorno prima, e bastava
+   quello per aprire un buco nello streak. */
+const dayKey = (d) => d.getFullYear() + "-" +
+  String(d.getMonth() + 1).padStart(2, "0") + "-" +
+  String(d.getDate()).padStart(2, "0");
+const todayKey = () => dayKey(new Date());
 const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return dayKey(d); };
 const lastNDays = (n) => { const o = []; for (let i = 0; i < n; i++) { const d = new Date(); d.setDate(d.getDate() - i); o.push(dayKey(d)); } return o; };
 const weekKey = () => {
@@ -757,14 +858,14 @@ function computeKafa(state) {
 }
 
 function computeConsistency(state) {
-  const core = state.habits.filter((h) => h.core);
-  if (!core.length) return { pct: 0, held: 0, soglia: 0, tot: 0, grid: [] };
-  const soglia = Math.ceil(core.length / 2);
+  const core = coreOf(state);
+  if (!core.length) return { pct: 0, held: 0, soglia: 0, tot: 0, grid: [], streak: 0, best: 0 };
+  const soglia = sogliaOf(state);
   const grid = lastNDays(30).reverse().map((d) => {
     const l = state.log[d] || {};
-    const score = core.reduce((s, h) => s + habitWeight(h, l), 0);
+    const score = dayScore(state, l);
     const fulls = core.filter((h) => habitState(h, l).status === "full").length;
-    return { date: d, n: score, full: fulls === core.length, held: score >= soglia,
+    return { date: d, n: score, full: fulls === core.length, held: dayHeld(state, d),
       touched: score > 0 };
   });
   /* Streak calcolato su tutta la storia dei log, non solo 30 giorni.
@@ -772,10 +873,7 @@ function computeConsistency(state) {
      la giornata in corso non spezza la serie prima di sera).
      Record: la serie più lunga mai raggiunta. La medaglia guarda
      il record, non il corrente: una volta conquistata non si perde. */
-  const held = (dk) => {
-    const l = state.log[dk] || {};
-    return core.reduce((s, h) => s + habitWeight(h, l), 0) >= soglia;
-  };
+  const held = (dk) => dayHeld(state, dk);
   let current = 0;
   for (let i = 0; i < 400; i++) {
     const dk = addDays(-i);
@@ -803,12 +901,14 @@ function computeConsistency(state) {
    almeno una volta, e resta tua per sempre: nessuna medaglia si
    rispegne se salti un giorno. È un museo, non una fiche.       */
 const MEDALS = [
-  { id: "d1",   days: 1,   name: "Il primo colpo",      sub: "Un giorno tenuto",       img: "/medals/1.png" },
-  { id: "d5",   days: 5,   name: "Cinque di fila",       sub: "La settimana regge",     img: "/medals/5.png" },
-  { id: "d10",  days: 10,  name: "Doppia cifra",         sub: "Non è più un caso",      img: "/medals/10.png" },
-  { id: "d20",  days: 20,  name: "Il guardiano",         sub: "Venti giorni",           img: "/medals/15.png" },
-  { id: "d50",  days: 50,  name: "Cinquanta",            sub: "Metà strada al mito",    img: null },
-  { id: "d100", days: 100, name: "Leggenda",             sub: "Cento giorni",           img: null },
+  { id: "d1",   days: 1,   name: "Il primo colpo",   sub: "Un giorno tenuto",      img: "/medals/1.png" },
+  { id: "d5",   days: 5,   name: "Cinque di fila",   sub: "La settimana regge",    img: "/medals/5.png" },
+  { id: "d10",  days: 10,  name: "Doppia cifra",     sub: "Non è più un caso",     img: "/medals/10.png" },
+  { id: "d15",  days: 15,  name: "La messa a fuoco", sub: "L'immagine è nitida",   img: "/medals/15.png" },
+  { id: "d20",  days: 20,  name: "Il guardiano",     sub: "Adesso lo presidi",     img: "/medals/20.png" },
+  { id: "d30",  days: 30,  name: "Il mese pieno",    sub: "Un mese intero, intatto", img: "/medals/30.png" },
+  { id: "d40",  days: 40,  name: "Il mestiere",      sub: "Non è più disciplina, è mestiere", img: "/medals/40.png" },
+  { id: "d60",  days: 60,  name: "Seconda natura",   sub: "Non ci pensi nemmeno più", img: "/medals/60.png" },
 ];
 
 function computeMedals(best) {
@@ -960,12 +1060,39 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [sync, setSync] = useState(CLOUD_ON ? "loading" : "off"); // off | loading | synced | offline
   const cloudTimer = useRef(null);
+  const pending = useRef(null);
+  const userRef = useRef(null);
+  useEffect(() => { userRef.current = user; }, [user]);
+
+  /* Sul telefono l'app viene messa a dormire senza preavviso: se
+     la spunta è ancora nel debounce, sparisce. Qui, appena la
+     pagina passa in secondo piano, quello che c'è in sospeso
+     viene scritto subito — su disco e sul cloud. */
+  useEffect(() => {
+    const flush = () => {
+      const s = pending.current;
+      if (!s) return;
+      clearTimeout(timer.current);
+      clearTimeout(cloudTimer.current);
+      try { store.set(STORE_KEY, JSON.stringify(s)); } catch (e) {}
+      const u = userRef.current;
+      if (CLOUD_ON && u) cloudSave(u.id, s);
+    };
+    const onHide = () => { if (document.visibilityState === "hidden") flush(); };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
 
   /* Avvio: prima la cache locale (istantanea), poi il cloud se
-     c'è una sessione. Il cloud, se presente, sovrascrive. */
+     c'è una sessione. Le due copie si fondono, non si sovrascrivono. */
   useEffect(() => {
     (async () => {
       const { data, recovered } = await loadState();
+      let local = data || DEFAULT_STATE;
       if (data) setState(data);
       if (recovered) setRecovered(recovered);
 
@@ -975,7 +1102,12 @@ export default function App() {
         if (u) {
           try {
             const remote = await cloudLoad(u.id);
-            if (remote) { setState(migrate(remote)); }
+            if (remote) {
+              const merged = migrate(mergeStates(local, migrate(remote)));
+              setState(merged);
+              await store.set(STORE_KEY, JSON.stringify(merged));
+              await cloudSave(u.id, merged);
+            }
             setSync("synced");
           } catch (e) { setSync("offline"); }
         }
@@ -989,6 +1121,7 @@ export default function App() {
   const persist = (next) => {
     const stamped = Object.assign({}, next, { v: SCHEMA });
     setState(stamped);
+    pending.current = stamped;
     /* cache locale immediata */
     clearTimeout(timer.current);
     timer.current = setTimeout(() => store.set(STORE_KEY, JSON.stringify(stamped)), 400);
@@ -1008,8 +1141,12 @@ export default function App() {
     setSync("loading");
     try {
       const remote = await cloudLoad(u.id);
-      if (remote) setState(migrate(remote));   // il cloud ha già dati: vincono loro
-      else await cloudSave(u.id, state);        // primo login: carico lo stato locale
+      /* fondo le due storie e rimando su il risultato, così i due
+         dispositivi finiscono sulla stessa copia completa */
+      const merged = remote ? migrate(mergeStates(state, migrate(remote))) : state;
+      setState(merged);
+      await store.set(STORE_KEY, JSON.stringify(merged));
+      await cloudSave(u.id, merged);
       setSync("synced");
     } catch (e) { setSync("offline"); }
   };
@@ -1648,7 +1785,7 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
   const [showWrap, setShowWrap] = useState(false);
 
   const writeLog = (patch) => persist(Object.assign({}, state, {
-    log: Object.assign({}, state.log, { [tk]: Object.assign({}, entry, patch) }),
+    log: Object.assign({}, state.log, { [tk]: stampDay(state, Object.assign({}, entry, patch)) }),
   }));
 
   /* Toccare la macro chiude o riapre tutto insieme */
@@ -1666,7 +1803,7 @@ function Oggi({ state, persist, exposure, consistency, medals }) {
     const next = Object.assign({}, entry, { [key]: !entry[key] });
     const n = (h.subs || []).filter((x) => next[h.id + "." + x.id]).length;
     next[h.id] = n === (h.subs || []).length && n > 0;
-    persist(Object.assign({}, state, { log: Object.assign({}, state.log, { [tk]: next }) }));
+    persist(Object.assign({}, state, { log: Object.assign({}, state.log, { [tk]: stampDay(state, next) }) }));
   };
 
   const states = habits.map((h) => ({ h, st: habitState(h, entry) }));
@@ -1978,9 +2115,16 @@ function PinnedMedal({ medal, streak, best, onUnpin }) {
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
           <div className="medal-shine" style={{ width: 96, height: 96, flexShrink: 0,
             display: "grid", placeItems: "center" }}>
-            <img src={medal.img} alt={medal.name}
-              style={{ width: "100%", height: "100%", objectFit: "contain",
-                filter: "drop-shadow(0 4px 14px rgba(201,162,75,.35))" }} />
+            {medal.img ? (
+              <img src={medal.img} alt={medal.name}
+                style={{ width: "100%", height: "100%", objectFit: "contain",
+                  filter: "drop-shadow(0 4px 14px rgba(201,162,75,.35))" }} />
+            ) : (
+              <div style={{ width: 76, height: 76, borderRadius: 999, background: "#C9A24B22",
+                display: "grid", placeItems: "center", color: "#C9A24B" }}>
+                <Medal size={32} />
+              </div>
+            )}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12.5, color: "#C9A24B", fontWeight: 600, marginBottom: 3 }}>
@@ -2077,7 +2221,7 @@ function Trofei({ state, persist, consistency, medals }) {
                 <div style={{ textAlign: "center" }}>
                   <div style={{ fontSize: 14.5, fontWeight: 600, color: m.unlocked ? C.txt : C.dim,
                     letterSpacing: "-0.02em" }}>{m.name}</div>
-                  <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>{m.days} giorni · {m.sub}</div>
+                  <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>{m.days} giorn{m.days === 1 ? "o" : "i"} · {m.sub}</div>
                 </div>
                 {pinned ? (
                   <span style={{ fontSize: 11.5, fontWeight: 600, color: "#C9A24B",
@@ -2141,7 +2285,7 @@ function MedalZoom({ medal: m, pinned, onPin, onClose }) {
           )}
         </div>
         <div className="wrap-medalname">{m.name}</div>
-        <div className="wrap-medalsub">{m.days} giorni · {m.sub}</div>
+        <div className="wrap-medalsub">{m.days} giorn{m.days === 1 ? "o" : "i"} · {m.sub}</div>
         <p style={{ fontSize: 14, color: m.unlocked ? C.mut : C.dim, lineHeight: 1.6, margin: "10px 0 22px" }}>
           {m.unlocked
             ? "Sbloccata per sempre, anche se salti un giorno dopo di questo."
@@ -2266,6 +2410,24 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
       j.id === id ? Object.assign({}, j, { status: j.status === "incassato" ? "previsto" : "incassato" }) : j),
   }));
 
+  /* Un giorno passato si può ancora sistemare: capita di chiudere
+     tutto e scordarsi di segnarlo. La spunta vale come quel giorno,
+     e il verdetto viene ritimbrato sul momento. */
+  const toggleHabitOn = (dk, h) => {
+    const e = (state.log || {})[dk] || {};
+    const st = habitState(h, e);
+    const on = st.status !== "full";
+    const next = Object.assign({}, e, { [h.id]: on });
+    (h.subs || []).forEach((sb) => { next[h.id + "." + sb.id] = on; });
+    persist(Object.assign({}, state, {
+      log: Object.assign({}, state.log, { [dk]: stampDay(state, next) }),
+    }));
+  };
+
+  const selScore = dayScore(state, entry);
+  const selHeld = dayHeld(state, sel);
+  const selSoglia = sogliaOf(state);
+
   const monthJobs = (state.scheduledJobs || []).filter((j) => (j.date || "").slice(0, 7) === ym);
   const monthPrevisto = monthJobs.filter((j) => j.status !== "incassato")
     .reduce((s, j) => s + Number(j.safeAmount || 0) + Number(j.estAmount || 0), 0);
@@ -2340,21 +2502,31 @@ function CalendarFull({ state, persist, tasks, addTask, toggleTask, editTask, rm
 
         {isPast && (
           <div style={{ marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid " + C.line }}>
-            <div className="calsectitle" style={{ color: C.mut }}>Abitudini chiuse quel giorno</div>
-            {(state.habits || []).filter((h) => habitState(h, entry).status !== "none").length === 0 && (
-              <Empty>Nessuna abitudine registrata per questo giorno.</Empty>
-            )}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 }}>
+              <span className="calsectitle" style={{ color: C.mut, marginBottom: 0 }}>Abitudini di quel giorno</span>
+              <span style={{ fontSize: 11.5, fontWeight: 600, padding: "4px 11px", borderRadius: 999, flexShrink: 0,
+                background: (selHeld ? FC.correct : C.dim) + "1F", color: selHeld ? FC.correct : C.dim }}>
+                {selHeld ? "Giornata tenuta" : selScore + "/" + selSoglia + " · non tenuta"}
+              </span>
+            </div>
+            <p style={{ fontSize: 12.5, color: C.dim, lineHeight: 1.5, margin: "0 0 8px" }}>
+              Se hai fatto qualcosa e ti sei scordato di segnarlo, spuntalo adesso: vale per quel giorno.
+            </p>
             {(state.habits || []).map((h) => {
               const st = habitState(h, entry);
-              if (st.status === "none") return null;
               return (
-                <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
-                  <Dot color={st.color} size={8} />
-                  <span style={{ fontSize: 14, color: C.txt }}>{h.label}</span>
-                  <span style={{ fontSize: 12, color: C.dim, marginLeft: "auto" }}>
-                    {st.status === "full" ? "fatta" : st.done + "/" + st.tot}
+                <button key={h.id} className="btn row" onClick={() => toggleHabitOn(sel, h)} style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "10px 8px", width: "100%",
+                  background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                }}>
+                  <Radio done={st.status === "full"} color={P[h.pillar] ? P[h.pillar].hue : FC.correct} size={20} />
+                  <span style={{ fontSize: 14.5, color: st.status === "none" ? C.dim : C.txt, flex: 1, minWidth: 0 }}>
+                    {h.label}{h.core ? "" : " · secondaria"}
                   </span>
-                </div>
+                  <span style={{ fontSize: 12, color: C.dim, flexShrink: 0 }}>
+                    {st.status === "full" ? "fatta" : st.status === "part" ? st.done + "/" + st.tot : ""}
+                  </span>
+                </button>
               );
             })}
           </div>
@@ -4746,6 +4918,18 @@ function CategorieEditor({ state, persist }) {
   const [newMacro, setNewMacro] = useState("");
   const nCore = habits.filter((h) => h.core).length;
 
+  const soglia = Number((state.profile || {}).soglia) || 0;
+  const sogliaAttiva = sogliaOf(state);
+  const setSoglia = (n) => persist(Object.assign({}, state, {
+    profile: Object.assign({}, state.profile, { soglia: n }),
+  }));
+  const pillStyle = (on) => ({
+    fontSize: 13, fontFamily: "inherit", padding: "8px 15px", borderRadius: 999, cursor: "pointer",
+    border: "1px solid " + (on ? "transparent" : C.line),
+    background: on ? C.txt : "transparent", color: on ? "#141416" : C.mut,
+    fontWeight: on ? 600 : 500, transition: "all .18s",
+  });
+
   const setHabits = (list) => persist(Object.assign({}, state, { habits: list }));
   const upd = (id, patch) => setHabits(habits.map((h) => (h.id === id ? Object.assign({}, h, patch) : h)));
   const addMacro = () => {
@@ -4776,6 +4960,33 @@ function CategorieEditor({ state, persist }) {
           un giorno in cui hai fatto qualcosa.
           {nCore > 5 && <span style={{ color: FC.high }}> Ne hai {nCore} intrascendibili: oltre cinque smetti di farle tutte.</span>}
         </p>
+
+        {/* La soglia è tua e resta ferma: aggiungere una categoria non
+           deve alzare l'asticella anche per i giorni già chiusi. */}
+        <div style={{ background: C.card2, border: "1px solid " + C.line, borderRadius: 18,
+          padding: 16, marginBottom: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>
+            Quante ne servono perché il giorno conti
+          </div>
+          <p style={{ color: C.mut, fontSize: 13, lineHeight: 1.55, margin: "0 0 12px" }}>
+            Sotto questo numero la giornata non entra nello streak. Tienilo fermo: se lo lasci
+            in automatico cambia da solo ogni volta che aggiungi una categoria, e i giorni
+            già chiusi vengono ri-giudicati.
+          </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button className="btn" onClick={() => setSoglia(0)} style={pillStyle(soglia === 0)}>
+              Auto ({Math.ceil(nCore / 2)})
+            </button>
+            {Array.from({ length: Math.max(nCore, 1) }, (_, i) => i + 1).map((n) => (
+              <button key={n} className="btn" onClick={() => setSoglia(n)} style={pillStyle(soglia === n)}>
+                {n}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 10 }}>
+            Adesso: {sogliaAttiva} su {nCore}.
+          </div>
+        </div>
 
         {habits.map((h) => {
           const open = openId === h.id;
